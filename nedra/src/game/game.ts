@@ -28,6 +28,7 @@ export class Game {
   platform!: Platform;
   meta: MetaState = newMeta();
   run: RunState | null = null;
+  private runSnapshot: RunState | null = null;   // забег на последней станции: его сохраняем, пока идёт ярус
   mode: Mode = 'boot';
   tier: TierScene | null = null;
   outcome: RunOutcome | null = null;
@@ -175,7 +176,8 @@ export class Game {
   }
 
   saveNow(cloud = false): void {
-    const data: SaveData = { v: 1, ts: Date.now(), meta: this.meta, run: this.run?.station ? this.run : null };
+    const run = this.run?.station ? this.run : this.run ? this.runSnapshot : null;
+    const data: SaveData = { v: 1, ts: Date.now(), meta: this.meta, run };
     saveLocal(data);
     const now = Date.now();
     if (cloud || now - this.cloudAt > 5000) {
@@ -223,6 +225,7 @@ export class Game {
   }
 
   toStation(): void {
+    if (this.run?.station) this.runSnapshot = JSON.parse(JSON.stringify(this.run)) as RunState;
     this.mode = 'station';
     this.tier = null;
     this.hud.hide();
@@ -297,7 +300,6 @@ export class Game {
     run.hearts = Math.max(run.hearts, 0) + 1;
     this.closeModal();
     tier.revive();
-    this.platform.gameplayStart();
     this.toast('Второе дыхание!', 'good');
   }
 
@@ -309,6 +311,7 @@ export class Game {
     this.outcomeDoubled = false;
     void this.platform.submitScore('depth', this.meta.stats.bestDepth);
     this.run = null;
+    this.runSnapshot = null;
     this.tier = null;
     this.canvas.style.filter = '';
     this.saveNow(true);
@@ -337,6 +340,7 @@ export class Game {
   }
 
   openModal(el: HTMLElement): void {
+    if (this.mode === 'tier' && !this.modalOpen) this.platform.gameplayStop();
     this.modalOpen = true;
     this.screen.append(el);
     this.applyPause();
@@ -344,6 +348,7 @@ export class Game {
 
   closeModal(): void {
     this.screen.querySelectorAll('.modal-bg').forEach((m) => m.remove());
+    if (this.mode === 'tier' && this.modalOpen && this.tier && !this.tier.done) this.platform.gameplayStart();
     this.modalOpen = false;
     this.applyPause();
   }
