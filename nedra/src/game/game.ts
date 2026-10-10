@@ -1,21 +1,23 @@
-// Контроллер игры: сохранения, площадка, реклама, переходы между посёлком, станцией и ярусом.
+// Контроллер игры: сохранения, площадка, реклама, переходы между посёлком, привалом и этажом.
 import { AD_COOLDOWN, NEWBIE_GIFT } from '../config';
-import { advance, finishRun, makeStation, newRun, onBossBeaten, type RunOutcome } from '../core/run';
+import { advance, completeFloor, finishRun, floorSeed, newRun, type RunOutcome } from '../core/run';
 import { Rng } from '../core/rng';
 import { loadLocal, normalize, pickNewest, saveLocal, type SaveData } from '../core/save';
-import { newMeta, type Heir, type MetaState, type RunState } from '../core/state';
+import { newMeta, type MetaState, type RunState } from '../core/state';
 import { computeStats } from '../core/stats';
-import type { NodeType } from '../core/gen';
-import { layerDef, LAYERS } from '../data/layers';
+import type { HeroDef } from '../data/heroes';
 import { createPlatform, type Platform, type Product } from '../platform';
 import { Audio } from './audio';
+import { Floor, type FloorEnv, type PropState } from './floor';
 import { Input } from './input';
-import { buildAtlas, buildGnome, HELMETS, type Atlas, type GnomeSprites } from './textures';
-import { TierScene } from './tier';
+import { Renderer } from './render';
+import { buildAtlas, heroSprites, ROCK_STYLE, T, type Atlas, type HeroSprites } from './textures';
 import { Hud } from '../ui/hud';
 import * as screens from '../ui/screens';
 
-export type Mode = 'boot' | 'base' | 'station' | 'tier' | 'results';
+export type Mode = 'boot' | 'base' | 'station' | 'floor' | 'results';
+
+const STEP = 1 / 60;
 
 export class Game {
   readonly canvas: HTMLCanvasElement;
@@ -26,16 +28,16 @@ export class Game {
   readonly input = new Input();
   hud!: Hud;
   platform!: Platform;
+  atlas!: Atlas;
+  renderer!: Renderer;
   meta: MetaState = newMeta();
   run: RunState | null = null;
-  private runSnapshot: RunState | null = null;   // забег на последней станции: его сохраняем, пока идёт ярус
+  private runSnapshot: RunState | null = null;   // забег на входе в этаж: его сохраняем, пока идёт этаж
   mode: Mode = 'boot';
-  tier: TierScene | null = null;
+  floor: Floor | null = null;
   outcome: RunOutcome | null = null;
   outcomeDoubled = false;
   products: Product[] = [];
-  private atlases = new Map<number, Atlas>();
-  gnome!: GnomeSprites;
   private lastAd = 0;
   private adCooldown = AD_COOLDOWN;
   private hidden = false;
@@ -47,7 +49,7 @@ export class Game {
   private saveTimer = 0;
   private cloudAt = 0;
   private rngCounter = 1;
-  tutorialStep = 0;
+  private dying = false;
 
   constructor(root: HTMLElement) {
     this.canvas = root.querySelector('#game') as HTMLCanvasElement;
@@ -83,34 +85,26 @@ export class Game {
     this.input.attach(this.canvas);
     this.input.onFirstGesture = () => this.audio.unlock();
     window.addEventListener('pointerdown', () => this.audio.unlock(), { capture: true });
-    this.buildGnome();
+    this.atlas = buildAtlas();
+    this.renderer = new Renderer(this.ctx, this.atlas);
     window.addEventListener('resize', () => this.resize());
     this.resize();
     document.getElementById('loading')?.remove();
     this.platform.ready();
     if (this.run?.station) this.toStation();
+    else if (this.run) this.enterFloor();
     else if (!this.meta.tutorialDone) this.startTutorial();
     else this.toBase();
     requestAnimationFrame((t) => this.frame(t));
   }
 
-  buildGnome(): void {
-    const helmet = this.meta.purchases.starter ? HELMETS.veteran.color : HELMETS.basic.color;
-    this.gnome = buildGnome(helmet, '#f4f1ea');
-  }
-
-  atlas(layer: number): Atlas {
-    let a = this.atlases.get(layer);
-    if (!a) {
-      a = buildAtlas(layerDef(layer).pal, layer);
-      this.atlases.set(layer, a);
-    }
-    return a;
+  heroSprite(hero: HeroDef): HeroSprites {
+    return heroSprites(this.atlas, hero);
   }
 
   rng(): Rng {
     this.rngCounter++;
-    return new Rng(((this.run?.seed ?? 1) ^ Math.imul(this.rngCounter, 2654435761)) >>> 0);
+    return new Rng(((this.run?.seed ?? 1) ^ Math.imul(this.rngCounter, 2654435761) ^ Date.now()) >>> 0);
   }
 
   // ---------------- паузы площадки ----------------
@@ -123,7 +117,7 @@ export class Game {
   applyPause(): void {
     const sys = this.hidden || this.adPaused;
     this.audio.setPaused(sys);
-    if (this.tier) this.tier.paused = sys || this.modalOpen;
+    if (this.floor) this.floor.paused = sys || this.modalOpen;
     if (sys) this.input.reset();
   }
 
@@ -164,7 +158,6 @@ export class Game {
       return;
     }
     await this.applyOwned();
-    this.buildGnome();
     this.toast('Спасибо за поддержку!', 'good');
     this.saveNow(true);
   }
@@ -177,7 +170,7 @@ export class Game {
 
   saveNow(cloud = false): void {
     const run = this.run?.station ? this.run : this.run ? this.runSnapshot : null;
-    const data: SaveData = { v: 1, ts: Date.now(), meta: this.meta, run };
+    const data: SaveData = { v: 2, ts: Date.now(), meta: this.meta, run };
     saveLocal(data);
     const now = Date.now();
     if (cloud || now - this.cloudAt > 5000) {
@@ -195,7 +188,7 @@ export class Game {
 
   toBase(): void {
     this.mode = 'base';
-    this.tier = null;
+    this.floor = null;
     this.hud.hide();
     this.audio.stopMusic();
     this.clearScreen();
@@ -204,102 +197,102 @@ export class Game {
       this.meta.giftClaimed = true;
       this.meta.ingots += NEWBIE_GIFT;
       this.save();
-      screens.showInfo(this, 'Подарок старейшины', `Старейшина клана гордится тобой и дарит ${NEWBIE_GIFT} слитков. Улучши Кузницу или Столовую и спускайся снова!`,
+      screens.showInfo(this, 'Подарок старейшины', `Старейшина клана гордится тобой и дарит ${NEWBIE_GIFT} слитков. Отстрой Кузницу или Лазарет и спускайся снова!`,
         () => screens.renderBase(this));
     }
   }
 
   private startTutorial(): void {
-    const heir: Heir = { name: 'Кузьма', female: false, profession: 'miner', trait: null };
-    this.run = newRun(this.meta, heir, 1, (Date.now() & 0x7fffffff) || 1);
-    this.tutorialStep = 1;
-    const node = this.run.station!.next[0];
-    advance(this.run, node, this.rng());
-    this.enterTier(node);
+    this.run = newRun(this.meta, 'miner', 1, (Date.now() & 0x7fffffff) || 1);
+    advance(this.run);
+    this.enterFloor();
   }
 
-  beginRun(heir: Heir, startLayer: number): void {
-    this.run = newRun(this.meta, heir, startLayer, (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0);
+  beginRun(hero: string, startLayer: number): void {
+    this.meta.hero = hero;
+    this.run = newRun(this.meta, hero, startLayer, (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0);
     this.save();
     this.toStation();
   }
 
   toStation(): void {
-    if (this.run?.station) this.runSnapshot = JSON.parse(JSON.stringify(this.run)) as RunState;
     this.mode = 'station';
-    this.tier = null;
+    this.floor = null;
     this.hud.hide();
     this.clearScreen();
     screens.renderStation(this);
+    this.saveNow();
   }
 
-  async chooseNode(node: NodeType): Promise<void> {
+  async descend(): Promise<void> {
     const run = this.run;
     if (!run?.station) return;
     this.audio.click();
     await this.interstitial();
-    advance(run, node, this.rng());
-    this.enterTier(node);
+    advance(run);
+    this.enterFloor();
   }
 
-  enterTier(node: NodeType): void {
+  enterFloor(): void {
     const run = this.run!;
     this.clearScreen();
-    this.mode = 'tier';
-    const seed = (run.seed + run.tiers * 7919 + run.layer * 104729) >>> 0;
-    this.tier = new TierScene({
+    this.mode = 'floor';
+    this.dying = false;
+    this.runSnapshot = JSON.parse(JSON.stringify(run)) as RunState;
+    const env: FloorEnv = {
       meta: this.meta,
       run,
       audio: this.audio,
-      atlas: this.atlas(run.layer),
-      gnome: this.gnome,
-      coinTarget: () => this.hud.coinTarget(),
-      complete: (s) => this.onTierComplete(s.node),
-      fail: (r) => this.onTierFail(r),
       toast: (t, k) => this.toast(t, k),
-      pulseCoins: () => this.hud.pulseCoins(),
-    }, node, seed);
-    this.canvas.style.filter = this.tier.stats.grayscale ? 'grayscale(1) contrast(1.1)' : '';
+      complete: () => this.onFloorComplete(),
+      died: () => this.onDeath(),
+      openProp: (kind, prop) => this.openProp(kind, prop),
+      itemFound: (id) => this.hud.itemCard(id),
+    };
+    this.floor = new Floor(env, floorSeed(run));
+    this.renderer.resetCamera();
     this.hud.show();
+    this.hud.intro(this.floor, run);
     this.input.reset();
     this.platform.gameplayStart();
     this.audio.playMusic(run.layer);
-    if (node === 'boss') this.hud.bossBanner(layerDef(run.layer).boss.name, layerDef(run.layer).boss.desc);
+    this.saveNow();
   }
 
-  private onTierComplete(node: NodeType): void {
+  private openProp(kind: 'merchant' | 'shrine' | 'anvil', prop: PropState): void {
+    if (this.modalOpen) return;
+    screens.showProp(this, kind, prop);
+  }
+
+  private onFloorComplete(): void {
     const run = this.run!;
     this.platform.gameplayStop();
-    run.tiers += 1;
-    const notes: string[] = [];
-    if (node === 'boss') notes.push(...onBossBeaten(this.meta, run));
-    run.station = makeStation(this.meta, run, node, this.rng());
-    this.canvas.style.filter = '';
-    this.saveNow();
-    if (this.tutorialStep) this.tutorialStep = 0;
+    const news = completeFloor(this.meta, run, this.rng());
+    this.audio.fanfare();
+    this.saveNow(true);
     this.toStation();
-    for (const n of notes) this.toast(n, 'good');
-    if (node === 'boss' && this.meta.bosses.length === 1 && run.layer === 1) void this.platform.requestReview();
+    for (const n of news) this.toast(n, 'good');
+    if (run.station?.kind === 'boss' && this.meta.bosses.length === 1 && run.layer === 1) void this.platform.requestReview();
   }
 
-  private onTierFail(reason: 'energy' | 'hearts'): void {
-    if (!this.tier || this.modalOpen) return;
+  private onDeath(): void {
+    if (!this.floor || this.dying) return;
+    this.dying = true;
     this.platform.gameplayStop();
     this.audio.fail();
-    screens.showEvac(this, reason);
+    screens.showDeath(this);
   }
 
   async revive(): Promise<void> {
-    const run = this.run, tier = this.tier;
-    if (!run || !tier || run.revived) return;
+    const run = this.run, floor = this.floor;
+    if (!run || !floor || run.revived) return;
     const ok = await this.rewarded();
     if (!ok) return;
     run.revived = true;
-    const s = computeStats(this.meta, run);
-    run.energy = Math.max(run.energy, 0) + Math.round(s.maxEnergy * 0.5);
-    run.hearts = Math.max(run.hearts, 0) + 1;
+    run.hp = Math.ceil(computeStats(this.meta, run).maxHp * 0.5);
+    floor.p.inv = 2.5;
+    this.dying = false;
     this.closeModal();
-    tier.revive();
     this.toast('Второе дыхание!', 'good');
   }
 
@@ -312,8 +305,7 @@ export class Game {
     void this.platform.submitScore('depth', this.meta.stats.bestDepth);
     this.run = null;
     this.runSnapshot = null;
-    this.tier = null;
-    this.canvas.style.filter = '';
+    this.floor = null;
     this.saveNow(true);
     this.mode = 'results';
     this.hud.hide();
@@ -340,21 +332,22 @@ export class Game {
   }
 
   openModal(el: HTMLElement): void {
-    if (this.mode === 'tier' && !this.modalOpen) this.platform.gameplayStop();
+    if (this.mode === 'floor' && !this.modalOpen) this.platform.gameplayStop();
     this.modalOpen = true;
+    this.input.reset();
     this.screen.append(el);
     this.applyPause();
   }
 
   closeModal(): void {
     this.screen.querySelectorAll('.modal-bg').forEach((m) => m.remove());
-    if (this.mode === 'tier' && this.modalOpen && this.tier && !this.tier.done) this.platform.gameplayStart();
+    if (this.mode === 'floor' && this.modalOpen && this.floor && !this.floor.done) this.platform.gameplayStart();
     this.modalOpen = false;
     this.applyPause();
   }
 
   pauseMenu(): void {
-    if (this.mode !== 'tier' || this.modalOpen) return;
+    if (this.mode !== 'floor' || this.modalOpen) return;
     screens.showPause(this);
   }
 
@@ -376,13 +369,18 @@ export class Game {
 
   // ---------------- цикл ----------------
 
+  private dpr(): number {
+    return Math.min(window.devicePixelRatio || 1, 2.5);
+  }
+
   private resize(): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const dpr = this.dpr();
     const w = Math.round(this.canvas.clientWidth * dpr), h = Math.round(this.canvas.clientHeight * dpr);
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
     }
+    this.renderer?.resize(w, h);
   }
 
   private frame(t: number): void {
@@ -390,44 +388,50 @@ export class Game {
     const dt = Math.min(0.1, this.last ? (t - this.last) / 1000 : 0);
     this.last = t;
     this.time += dt;
-    if (this.canvas.width !== Math.round(this.canvas.clientWidth * Math.min(window.devicePixelRatio || 1, 2.5))) this.resize();
+    if (this.canvas.width !== Math.round(this.canvas.clientWidth * this.dpr())) this.resize();
     if (this.saveTimer > 0) {
       this.saveTimer -= dt;
       if (this.saveTimer <= 0) this.saveNow();
     }
     const W = this.canvas.width, H = this.canvas.height;
-    if (this.mode === 'tier' && this.tier) {
-      if (this.input.actions.includes('pause')) {
-        this.input.actions = this.input.actions.filter((a) => a !== 'pause');
-        this.pauseMenu();
-      }
-      const tier = this.tier;
+    const floor = this.floor;
+    if (this.mode === 'floor' && floor && this.run) {
+      const actions = this.input.take();
+      if (actions.includes('pause')) this.pauseMenu();
+      const acts = actions.filter((a) => a !== 'pause');
       this.acc += dt;
-      const step = 1 / 60;
-      while (this.acc >= step && this.tier === tier) {
-        tier.update(step, this.input);
-        this.acc -= step;
+      let first = true;
+      while (this.acc >= STEP && this.floor === floor) {
+        floor.update(STEP, this.modalOpen ? { mx: 0, my: 0 } : this.input.move(), first && !this.modalOpen ? acts : []);
+        first = false;
+        this.acc -= STEP;
       }
-      if (this.tier !== tier || !this.run) return;
-      tier.render(this.ctx, W, H, this.canvas.clientWidth);
-      this.hud.update(tier, this.run);
-      if (this.tutorialStep) this.hud.tutorial(tier);
+      if (this.floor !== floor || !this.run) return;
+      this.renderer.render(floor, dt, this.modalOpen ? null : this.input.joy);
+      this.hud.update(floor, this.run, dt);
     } else {
       this.acc = 0;
       this.renderBackdrop(W, H);
     }
   }
 
-  /** Фон меню: разрез шахты с медленной пылью. */
+  /** Фон меню: стена из пород пласта и медленная пыль. */
   private renderBackdrop(W: number, H: number): void {
     const ctx = this.ctx;
-    const layer = LAYERS[Math.max(0, Math.min(LAYERS.length - 1, (this.run?.layer ?? 1) - 1))];
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#2a1d14');
-    g.addColorStop(1, layer.pal.bg);
-    ctx.fillStyle = g;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    const z = Math.max(2, Math.round(Math.min(W, H) / 140));
+    const size = T * z;
+    const rocks = Object.keys(ROCK_STYLE).map(Number);
+    const layer = this.run?.layer ?? 1;
+    for (let y = 0; y * size < H; y++) for (let x = 0; x * size < W; x++) {
+      const k = Math.abs((x * 7 + y * 13 + layer * 3) % 5) + Math.floor(y / 6);
+      const tops = this.atlas.rockTop.get(rocks[Math.min(rocks.length - 2, k % 6)])!;
+      ctx.drawImage(tops[(x + y) % tops.length], x * size, y * size, size, size);
+    }
+    ctx.fillStyle = 'rgba(8,5,3,0.72)';
     ctx.fillRect(0, 0, W, H);
-    const s = Math.max(4, Math.round(Math.min(W, H) / 60));
+    const s = Math.max(3, Math.round(z * 1.5));
     for (let k = 0; k < 40; k++) {
       const x = ((k * 97.3 + this.time * 6 * (1 + (k % 3))) % (W + 40)) - 20;
       const y = (k * 151.7 + Math.sin(this.time * 0.3 + k) * 20) % H;

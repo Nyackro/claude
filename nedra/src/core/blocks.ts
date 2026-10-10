@@ -1,52 +1,53 @@
-// Типы блоков сетки. Цифры хранятся в Uint8Array.
+// Клетки этажа (вид сверху). Порода различается прочностью и уровнем кирки, который нужен, чтобы её копать.
 
 export const B = {
-  EMPTY: 0,
+  FLOOR: 0,
   DIRT: 1,
   CLAY: 2,
   STONE: 3,
-  HARD: 4,
-  BEDROCK: 5,
-  ORE: 6,
-  BOULDER: 7,
-  SAND: 8,
-  STALACTITE: 9,
-  CHEST: 10,
-  CRATE: 11,
-  GAS: 12,
-  RUBBLE: 13,
-  EXIT: 14,
+  GRANITE: 4,
+  BASALT: 5,
+  OBSIDIAN: 6,
+  BEDROCK: 7,
+  ORE: 8,
+  CHEST: 9,
+  CRATE: 10,
+  TNT: 11,
+  CRYSTAL: 12,
+  CRACKED: 13,
+  DOOR: 14,
 } as const;
 
 export type BlockId = (typeof B)[keyof typeof B];
 
 export interface BlockDef {
   name: string;
-  hp: number;          // множитель к прочности пласта
-  solid: boolean;      // мешает движению
-  diggable: boolean;
-  rock: boolean;       // пустая порода: сбивает комбо, высекает искру в газе
+  hp: number;
+  tier: number;        // минимальный уровень кирки
+  solid: boolean;
+  rock: boolean;       // обычная порода (может быть носителем руды)
 }
 
-const def = (name: string, hp: number, solid = true, diggable = true, rock = true): BlockDef =>
-  ({ name, hp, solid, diggable, rock });
+const d = (name: string, hp: number, tier: number, solid = true, rock = true): BlockDef => ({ name, hp, tier, solid, rock });
 
 export const BLOCKS: Record<number, BlockDef> = {
-  [B.EMPTY]: def('Пусто', 0, false, false, false),
-  [B.DIRT]: def('Грунт', 0.6),
-  [B.CLAY]: def('Глина', 1.0),
-  [B.STONE]: def('Камень', 1.5),
-  [B.HARD]: def('Твёрдая порода', 3.0),
-  [B.BEDROCK]: def('Коренная порода', 0, true, false, false),
-  [B.ORE]: def('Руда', 1.2, true, true, false),
-  [B.BOULDER]: def('Валун', 2.0),
-  [B.SAND]: def('Сыпучка', 0.4),
-  [B.STALACTITE]: def('Сталактит', 0.5),
-  [B.CHEST]: def('Сундук', 0.4, true, true, false),
-  [B.CRATE]: def('Ящик с припасами', 0.4, true, true, false),
-  [B.GAS]: def('Камень', 1.5),
-  [B.RUBBLE]: def('Обломки', 0.5),
-  [B.EXIT]: def('Лифт', 0, false, false, false),
+  [B.FLOOR]: d('Пол', 0, 0, false, false),
+  [B.DIRT]: d('Земля', 3, 0),
+  [B.CLAY]: d('Глина', 6, 0),
+  [B.STONE]: d('Камень', 12, 0),
+  [B.GRANITE]: d('Гранит', 22, 1),
+  [B.BASALT]: d('Базальт', 38, 2),
+  [B.OBSIDIAN]: d('Обсидиан', 60, 3),
+  [B.BEDROCK]: d('Коренная порода', Infinity, 99, true, false),
+  [B.ORE]: d('Руда', 0, 0),
+  [B.CHEST]: d('Сундук', 2, 0, true, false),
+  [B.CRATE]: d('Ящик', 2, 0, true, false),
+  [B.TNT]: d('Бочка с порохом', 1, 0, true, false),
+  [B.CRYSTAL]: d('Светокристалл', 8, 1, true, false),
+  [B.CRACKED]: d('Треснувшая стена', 4, 0, true, false),
+  [B.DOOR]: d('Запечатанный проход', Infinity, 99, true, false),
 };
 
-export const isFalling = (b: number) => b === B.BOULDER || b === B.SAND;
+export const ROCKS = [B.DIRT, B.CLAY, B.STONE, B.GRANITE, B.BASALT, B.OBSIDIAN] as const;
+
+export const PICK_TIER_NAME = ['деревянная', 'медная', 'железная', 'стальная', 'мифриловая'];

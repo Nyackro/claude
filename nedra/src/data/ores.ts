@@ -1,54 +1,44 @@
-// Руды пластов (GDD, раздел 6). Частота внутри пласта 60/30/10%.
+// Руды: tier - какая кирка нужна, value - цена у скупщика, hp - добавка к прочности породы.
 
-export type OreKind = 'metal' | 'gem' | 'coal' | 'relic';
+export type OreKind = 'coal' | 'metal' | 'gem' | 'relic';
 
 export interface OreDef {
   id: number;
   key: string;
   name: string;
-  layer: number;
   value: number;
-  weight: number;
+  tier: number;
+  hp: number;
   kind: OreKind;
   color: string;
   light: string;
   dark: string;
+  glow?: string;      // светится в темноте
 }
 
-const o = (key: string, name: string, layer: number, value: number, weight: number, kind: OreKind,
-  color: string, light: string, dark: string) => ({ key, name, layer, value, weight, kind, color, light, dark });
+type Raw = Omit<OreDef, 'id'>;
+const o = (key: string, name: string, value: number, tier: number, hp: number, kind: OreKind,
+  color: string, light: string, dark: string, glow?: string): Raw => ({ key, name, value, tier, hp, kind, color, light, dark, glow });
 
-const LIST = [
-  o('copper', 'Медь', 1, 2, 60, 'metal', '#c87533', '#f2a65e', '#7a4019'),
-  o('tin', 'Олово', 1, 3, 30, 'metal', '#a7b1b7', '#e4ecef', '#5e6a72'),
-  o('jasper', 'Яшма', 1, 8, 10, 'gem', '#c43a2c', '#ff8a78', '#6e1a12'),
-  o('iron', 'Железо', 2, 4, 60, 'metal', '#a36b4f', '#dc9f80', '#5a3426'),
-  o('silver', 'Серебро', 2, 8, 30, 'metal', '#dbe3e8', '#ffffff', '#8c9ea8'),
-  o('pearl', 'Пещерный жемчуг', 2, 22, 10, 'gem', '#efe4cf', '#fffaf0', '#b0a184'),
-  o('coal', 'Уголь', 3, 8, 60, 'coal', '#2a2a2a', '#7a7a7a', '#0b0b0b'),
-  o('lead', 'Свинец', 3, 15, 30, 'metal', '#76828f', '#b8c4cf', '#434c55'),
-  o('amber', 'Янтарь', 3, 45, 10, 'gem', '#e39b2d', '#ffd27a', '#8a5410'),
-  o('gold', 'Золото', 4, 22, 60, 'metal', '#e5bf3f', '#fff0a0', '#8f6f12'),
-  o('garnet', 'Гранат', 4, 40, 30, 'gem', '#9b1e32', '#e2566c', '#4f0b17'),
-  o('topaz', 'Топаз', 4, 70, 10, 'gem', '#f0b24a', '#ffe1a0', '#9a6a17'),
-  o('amethyst', 'Аметист', 5, 50, 60, 'gem', '#9b59b6', '#d7a6ec', '#5a2a70'),
-  o('sapphire', 'Сапфир', 5, 90, 30, 'gem', '#2e64c8', '#8fb4ff', '#163672'),
-  o('emerald', 'Изумруд', 5, 160, 10, 'gem', '#27ae60', '#8ff0b5', '#11602f'),
-  o('platinum', 'Платина', 6, 110, 60, 'metal', '#d5dde3', '#ffffff', '#7f8b93'),
-  o('sporelight', 'Светоспора', 6, 200, 30, 'gem', '#5ff0cc', '#d0fff2', '#1b8a70'),
-  o('mushpearl', 'Грибной жемчуг', 6, 350, 10, 'gem', '#f39bd8', '#ffd9f2', '#99407e'),
-  o('cryolite', 'Криолит', 7, 240, 60, 'metal', '#cfe9f7', '#ffffff', '#7da3b8'),
-  o('aquamarine', 'Аквамарин', 7, 450, 30, 'gem', '#6fd6d0', '#c8fffb', '#2a8580'),
-  o('tusk', 'Бивень мамонта', 7, 750, 10, 'relic', '#eadfc4', '#fffaeb', '#a39573'),
-  o('ruby', 'Рубин', 8, 520, 60, 'gem', '#d11d3a', '#ff7088', '#6e0818'),
-  o('fireopal', 'Огненный опал', 8, 950, 30, 'gem', '#ff6a2b', '#ffc08f', '#8f2e08'),
-  o('salamander', 'Саламандров камень', 8, 1700, 10, 'gem', '#ff2f6d', '#ff9fbd', '#86102f'),
-  o('orichalcum', 'Орихалк', 9, 1150, 60, 'metal', '#dfa356', '#ffd9a0', '#7f5420'),
-  o('ancientcoin', 'Древняя монета', 9, 2100, 30, 'relic', '#d4af37', '#fff1a8', '#7d6512'),
-  o('goldmask', 'Золотая маска', 9, 4000, 10, 'relic', '#f5c542', '#fff4c2', '#8f6b0e'),
-  o('stariron', 'Звёздное железо', 10, 2500, 60, 'metal', '#9fb3ff', '#e2e8ff', '#4a5aa0'),
-  o('corespark', 'Искра Ядра', 10, 4600, 30, 'gem', '#ffe066', '#fffbd6', '#a88a12'),
-  o('starshard', 'Осколок звезды', 10, 9000, 10, 'gem', '#f4f6ff', '#ffffff', '#9aa3c8'),
+const LIST: Raw[] = [
+  o('coal', 'Уголь', 1, 0, 2, 'coal', '#2b2b2e', '#8a8a92', '#0b0b0d'),
+  o('copper', 'Медь', 3, 0, 3, 'metal', '#d07a3a', '#ffb072', '#7a3e16'),
+  o('tin', 'Олово', 4, 0, 3, 'metal', '#b7c2c7', '#f0f6f8', '#66727a'),
+  o('quartz', 'Кварц', 8, 0, 4, 'gem', '#e8e2f5', '#ffffff', '#9a8fb5', '#d9ccff'),
+  o('jasper', 'Яшма', 15, 1, 6, 'gem', '#d0402e', '#ff8a78', '#6e1a12'),
+  o('iron', 'Железо', 6, 1, 6, 'metal', '#a87156', '#e3ab8c', '#5a3426'),
+  o('silver', 'Серебро', 10, 1, 6, 'metal', '#dfe7ec', '#ffffff', '#8c9ea8'),
+  o('malachite', 'Малахит', 22, 1, 8, 'gem', '#2fae6a', '#8ff0b8', '#0f5a32'),
+  o('pearl', 'Пещерный жемчуг', 38, 2, 8, 'gem', '#f2e8d4', '#fffaf0', '#b0a184', '#fff6dc'),
+  o('lead', 'Свинец', 9, 1, 8, 'metal', '#7c8896', '#bcc8d3', '#434c55'),
+  o('gold', 'Золото', 18, 2, 10, 'metal', '#e8c13f', '#fff0a0', '#8f6f12', '#ffd75a'),
+  o('amber', 'Янтарь', 30, 2, 10, 'gem', '#e8992a', '#ffd27a', '#8a5410', '#ffb347'),
+  o('emerald', 'Изумруд', 70, 3, 14, 'gem', '#1fbf74', '#9dffd0', '#0b6b3c', '#5dffad'),
+  o('mithril', 'Мифрил', 45, 3, 16, 'metal', '#8fd6ff', '#e0f6ff', '#3c7fa8', '#9fe0ff'),
+  o('ruby', 'Рубин', 110, 4, 20, 'gem', '#e0213f', '#ff7088', '#6e0818', '#ff4a6a'),
+  o('adamantite', 'Адамантит', 90, 4, 24, 'metal', '#b04ad9', '#e9a6ff', '#52186e', '#c76bff'),
+  o('diamond', 'Алмаз', 220, 5, 30, 'gem', '#bff4ff', '#ffffff', '#5fb0c8', '#d6fbff'),
+  o('starmetal', 'Звёздный металл', 260, 5, 34, 'metal', '#9fb3ff', '#e2e8ff', '#4a5aa0', '#b8c6ff'),
 ];
 
 export const ORES: OreDef[] = LIST.map((x, i) => ({ id: i + 1, ...x }));
@@ -60,4 +50,3 @@ export const oreByKey = (key: string): OreDef => {
   if (!r) throw new Error(`unknown ore ${key}`);
   return r;
 };
-export const oresOfLayer = (layer: number): OreDef[] => ORES.filter((x) => x.layer === layer);

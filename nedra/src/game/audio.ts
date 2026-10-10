@@ -102,12 +102,52 @@ export class Audio {
     this.noiseHit(260 + hardness * 420 + Math.random() * 80, 0.07 + Math.min(0.06, hardness * 0.02), 0.5, 'bandpass', 1.4);
   }
 
-  ore(combo: number, gem: boolean): void {
+  ore(gem: boolean, combo = 0): void {
     const semis = Math.min(24, combo);
     const f = (gem ? 880 : 660) * 2 ** (semis / 12);
     this.tone(f, 0.18, 0.22, 'triangle');
     this.tone(f * 1.5, 0.14, 0.1, 'sine', 0.04);
     if (gem) this.tone(f * 2, 0.25, 0.08, 'sine', 0.08);
+  }
+
+  /** Кирка не берёт породу. */
+  clang(): void {
+    this.tone(1800, 0.09, 0.12, 'square', 0, 0.7);
+    this.noiseHit(3200, 0.08, 0.25, 'bandpass', 4);
+  }
+
+  swing(): void {
+    this.noiseHit(1800, 0.12, 0.22, 'bandpass', 0.9, 0.35);
+  }
+
+  squish(big = false): void {
+    this.noiseHit(big ? 300 : 700, big ? 0.35 : 0.15, big ? 0.6 : 0.35, 'lowpass', 1, 0.4);
+    this.tone(big ? 110 : 220, big ? 0.3 : 0.12, 0.18, 'sine', 0, 0.5);
+  }
+
+  zap(): void {
+    this.tone(1400, 0.08, 0.08, 'sawtooth', 0, 0.3);
+    this.noiseHit(5000, 0.06, 0.12, 'highpass', 0.7);
+  }
+
+  ability(): void {
+    this.tone(330, 0.2, 0.16, 'square', 0, 2);
+    this.tone(495, 0.2, 0.1, 'triangle', 0.05, 2);
+  }
+
+  torch(): void {
+    this.noiseHit(2600, 0.25, 0.18, 'highpass', 0.6, 0.5);
+    this.tone(440, 0.12, 0.06, 'sine', 0.05, 1.5);
+  }
+
+  rumble(): void {
+    this.noiseHit(140, 0.9, 0.6, 'lowpass', 0.7);
+    this.tone(48, 0.8, 0.3, 'sine', 0, 0.8);
+  }
+
+  roar(): void {
+    this.tone(90, 0.7, 0.3, 'sawtooth', 0, 0.6);
+    this.noiseHit(400, 0.6, 0.4, 'lowpass', 1.5, 0.5);
   }
 
   coin(): void {

@@ -45,6 +45,10 @@ export const ICONS = {
   lock: svg('<path fill="#b8a894" d="M4 7h8v8H4z"/><path fill="#b8a894" d="M5 3h1v4H5zM10 3h1v4h-1zM6 2h4v1H6z"/><path fill="#3a2a1f" d="M7 9h2v3H7z"/>'),
   sound: svg('<path fill="#f3e9dc" d="M2 6h3l4-4v12l-4-4H2z"/><path fill="#f3e9dc" d="M11 5h1v6h-1zM13 3h1v10h-1z"/>'),
   pause: svg('<path fill="#f3e9dc" d="M4 3h3v10H4zM9 3h3v10H9z"/>'),
+  sword: svg('<path fill="#dfe7ec" d="M12 1h3v3l-8 8-3-3z"/><path fill="#8a9aa6" d="M13 3h1v1l-7 7-1-1z"/><path fill="#c9a040" d="M3 9h1v1h1v1h1v1h1v1H6v1H5v-1H4v-1H3v-1H2v-1h1z"/><path fill="#6a4a2a" d="M1 13h2v2H1z"/>'),
+  torch: svg('<path fill="#7a4a26" d="M7 7h2v9H7z"/><path fill="#ff8a2a" d="M6 2h4v5H6z"/><path fill="#ffe08a" d="M7 3h2v3H7z"/><path fill="#ff5a1f" d="M7 0h1v2H7z"/>'),
+  coal: svg('<path fill="#2b2b2e" d="M3 5h4V3h5v2h2v6h-2v2H5v-2H3z"/><path fill="#8a8a92" d="M5 6h2v1H5zM9 4h2v1H9z"/>'),
+  bag: svg('<path fill="#a8763a" d="M4 5h8v9H4z"/><path fill="#c9965a" d="M5 6h3v2H5z"/><path fill="#6a4a22" d="M6 2h4v3H6z"/>'),
   gem: svg('<path fill="#5fd0ff" d="M4 2h8l3 4-7 9-7-9z"/><path fill="#c8f4ff" d="M5 3h3v3H5z"/>'),
 };
 

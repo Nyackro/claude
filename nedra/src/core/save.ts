@@ -2,7 +2,7 @@ import { SAVE_KEY } from '../config';
 import { newMeta, type MetaState, type RunState } from './state';
 
 export interface SaveData {
-  v: 1;
+  v: 2;
   ts: number;
   meta: MetaState;
   run: RunState | null;
@@ -12,7 +12,7 @@ export interface SaveData {
 export function normalize(raw: unknown): SaveData | null {
   if (!raw || typeof raw !== 'object') return null;
   const d = raw as Partial<SaveData>;
-  if (!d.meta) return null;
+  if (!d.meta || d.meta.v !== 2) return null;
   const base = newMeta();
   const meta: MetaState = {
     ...base,
@@ -21,9 +21,13 @@ export function normalize(raw: unknown): SaveData | null {
     purchases: { ...base.purchases, ...(d.meta.purchases ?? {}) },
     settings: { ...base.settings, ...(d.meta.settings ?? {}) },
     buildings: { ...(d.meta.buildings ?? {}) },
+    heroes: Array.isArray(d.meta.heroes) && d.meta.heroes.length ? [...d.meta.heroes] : [...base.heroes],
+    bosses: Array.isArray(d.meta.bosses) ? [...d.meta.bosses] : [],
   };
-  const run = d.run && typeof d.run === 'object' && (d.run as RunState).station ? (d.run as RunState) : null;
-  return { v: 1, ts: Number(d.ts) || 0, meta, run };
+  if (!meta.heroes.includes(meta.hero)) meta.hero = meta.heroes[0];
+  const r = d.run as RunState | null | undefined;
+  const run = r && typeof r === 'object' && typeof r.layer === 'number' && r.bag && r.items ? r : null;
+  return { v: 2, ts: Number(d.ts) || 0, meta, run };
 }
 
 export function loadLocal(): SaveData | null {

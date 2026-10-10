@@ -1,283 +1,325 @@
-// Логика забега без отрисовки: наследники, пояс, станции, лавка, события, итоги.
-import { CONSUMABLE_STACK, DRINK_PCT, DRINKS_PER_STATION, PRICES, REST_ENERGY_PCT, STEW_PCT, TOOL_MAX_LEVEL } from '../config';
-import { ARTIFACTS, artifactDef, RARITY_ORDER, RARITY_WEIGHT, type Rarity } from '../data/artifacts';
-import { consumableDef } from '../data/consumables';
-import { EVENTS, eventDef, riddleChoices, type EventChoice, type EventCtx } from '../data/events';
-import { NAMES_F, NAMES_M, PROFESSIONS, professionDef, TRAITS } from '../data/heirs';
+// Логика забега без отрисовки: старт, привалы (кузница, заточка, лавка, лечение), комнаты этажа, итоги и открытия.
+import { EVAC_KEEP, SHARPEN_MAX } from '../config';
+import { HEROES } from '../data/heroes';
+import { ITEMS, itemDef, RARITY_PRICE, RARITY_WEIGHT, type Rarity } from '../data/items';
 import { layerDef } from '../data/layers';
-import { GEAR, gearForLayer } from '../data/meta';
-import { computeIngots, layerR, priceR, type IngotResult } from './economy';
-import type { NodeType } from './gen';
-import { genLayerMap } from './map';
-import { Rng } from './rng';
-import type { Heir, MetaState, RunState, StationState } from './state';
-import { computeStats, type RunStats } from './stats';
+import { buildingLevel } from '../data/meta';
+import { ORES, oreByKey } from '../data/ores';
+import { PICKS, sharpenCost, SWORDS, type ToolTier } from '../data/tools';
+import { computeIngots, type IngotResult } from './economy';
+import { hash2, Rng } from './rng';
+import { stack, type MetaState, type RunState, type StationState } from './state';
+import { clampHp, computeStats } from './stats';
 
-export function rollHeirs(meta: MetaState, rng: Rng): Heir[] {
-  const n = !meta.tutorialDone ? 1 : meta.stats.runs < 2 ? 2 : 3;
-  const out: Heir[] = [];
-  const profs = rng.shuffle([...meta.professions]);
-  for (let k = 0; k < n; k++) {
-    const female = rng.chance(0.3);
-    const name = rng.pick(female ? NAMES_F : NAMES_M);
-    const profession = !meta.tutorialDone ? 'miner' : profs[k % profs.length];
-    const trait = !meta.tutorialDone ? null : rng.chance(0.8) ? rng.pick(TRAITS).id : null;
-    out.push({ name, female, profession, trait });
-  }
-  return out;
-}
+export type ToolKind = 'pick' | 'sword';
 
+/** Пласты, к которым можно спуститься на лифте. */
 export function availableLifts(meta: MetaState): number[] {
   const out = [1];
   for (let L = 2; L <= 10; L++) {
     if (!meta.bosses.includes(L - 1) || !layerDef(L).ready) break;
-    const gear = gearForLayer(L);
-    if (gear && !meta.gear.includes(gear.id)) break;
     out.push(L);
   }
   return out;
 }
 
-/** Почему нельзя пройти в пласт L (или null, если можно). */
-export function layerBlocker(meta: MetaState, L: number): string | null {
-  const def = layerDef(L);
-  if (L > 10) return 'Дальше Сердце Мира. Этот путь откроется в следующих обновлениях.';
-  if (!def.ready) return `Пласт ${L} «${def.name}» ещё копают строители. Скоро обновление!`;
-  const gear = gearForLayer(L);
-  if (gear && !meta.gear.includes(gear.id)) return `Нужно снаряжение: ${gear.name}. Купи его в посёлке.`;
-  return null;
-}
+/** Множитель цен пласта. */
+export const priceMult = (layer: number): number => 1 + 0.6 * (layer - 1);
 
-export function newRun(meta: MetaState, heir: Heir, startLayer: number, seed: number): RunState {
-  const tutorial = !meta.tutorialDone;
+export function newRun(meta: MetaState, hero: string, startLayer: number, seed: number): RunState {
   const rng = new Rng(seed);
+  const kit = startLayer - 1;
   const run: RunState = {
-    seed, heir, startLayer, layer: startLayer, step: 0,
-    map: genLayerMap(rng.seed(), tutorial),
-    energy: 0, hearts: 0, coins: 0, haul: 0, ore: {}, gemTypes: [], artifacts: [], consumables: [],
-    toolLevel: 1, tiers: 0, revived: false, tutorial, drinksBought: 0, rerolls: 0, freeRerollUsed: false,
-    heirRerollUsed: false, beltBonus: 0, oreBlessing: 0, chestBlessing: 0, pet: null, station: null,
-    bossesThisRun: [], blocks: 0,
+    seed, hero, startLayer, layer: startLayer, floor: 0, hp: 0,
+    coins: 15 * buildingLevel(meta, 'storage') + 40 * kit,
+    haul: 0, bag: { coal: 3 }, items: {}, pickTier: kit, pickSharpen: 0, swordTier: kit, swordSharpen: 0,
+    bombs: 1, scanners: 0, floorsDone: 0, kills: 0, revived: false, tutorial: !meta.tutorialDone, extraLives: 0, station: null,
   };
-  const s = computeStats(meta, run);
-  run.energy = s.maxEnergy;
-  run.hearts = s.maxHearts;
-  for (const [id, n] of Object.entries(professionDef(heir.profession).start)) addConsumable(run, s, id, n);
-  const kit = Math.min(3, startLayer - 1);
-  if (kit > 0) run.coins = Math.round(6 * layerR(startLayer));
-  run.station = {
-    kind: 'start', eventSeed: rng.seed(), offer: null, offerExtra: false, shop: [], consumablesForSale: [],
-    eventId: null, eventResult: null, restDone: true, next: run.map[0], forcedEnd: null, kitLeft: kit,
-  };
-  if (kit > 0) run.station.offer = randomArtifacts(meta, run, rng, 3, 'common');
+  if (meta.purchases.starter) run.items.helmet = 1;
+  run.hp = computeStats(meta, run).maxHp;
+  run.station = makeStation(meta, run, 'start', rng);
+  if (kit > 0) {
+    run.station.reward = randomItems(meta, run, rng, 3, 'common');
+    run.station.rewardLeft = 1;
+  }
   return run;
 }
 
-export function artifactPool(meta: MetaState): string[] {
+export const floorSeed = (run: RunState): number => Math.floor(hash2(run.layer * 7 + run.floor, run.floorsDone, run.seed) * 2 ** 31) + 1;
+
+/** Предметы, которые могут выпасть: открытые Разломами и не упёршиеся в лимит. */
+export function itemPool(meta: MetaState, run: RunState, rarity?: Rarity): string[] {
   const tier = meta.bosses.length ? Math.max(...meta.bosses) : 0;
-  return ARTIFACTS.filter((x) => x.rarity !== 'cursed' && x.pool <= tier).map((x) => x.id);
+  return ITEMS.filter((d) => d.pool <= tier && (!rarity || d.rarity === rarity) && (!d.max || stack(run, d.id) < d.max)).map((d) => d.id);
 }
 
-export function randomArtifacts(meta: MetaState, run: RunState, rng: Rng, n: number, min: Rarity,
-  cursedChance = 0): string[] {
-  const minIdx = RARITY_ORDER.indexOf(min);
-  let pool = artifactPool(meta).filter((id) => !run.artifacts.includes(id));
+/** n разных предметов. min - не ниже редкости; без min в лавке изредка попадаются проклятые. */
+export function randomItems(meta: MetaState, run: RunState, rng: Rng, n: number, min: Rarity | null): string[] {
+  const order: Rarity[] = ['common', 'rare', 'legendary'];
+  const minIdx = min ? order.indexOf(min) : 0;
+  const pool = itemPool(meta, run).filter((id) => {
+    const r = itemDef(id).rarity;
+    return r === 'cursed' ? !min : order.indexOf(r) >= minIdx;
+  });
   const out: string[] = [];
-  for (let k = 0; k < n; k++) {
-    if (cursedChance > 0 && rng.chance(cursedChance)) {
-      const cursed = ARTIFACTS.filter((x) => x.rarity === 'cursed' && !run.artifacts.includes(x.id) && !out.includes(x.id));
-      if (cursed.length) { out.push(rng.pick(cursed).id); continue; }
-    }
-    const cand = pool.filter((id) => RARITY_ORDER.indexOf(artifactDef(id).rarity) >= minIdx && !out.includes(id));
-    if (!cand.length) break;
-    const id = rng.weighted(cand, (x) => RARITY_WEIGHT[artifactDef(x).rarity]);
+  for (let k = 0; k < n && pool.length; k++) {
+    const id = rng.weighted(pool, (x) => RARITY_WEIGHT[itemDef(x).rarity] * (stack(run, x) ? 0.6 : 1));
     out.push(id);
-    pool = pool.filter((x) => x !== id);
+    pool.splice(pool.indexOf(id), 1);
   }
   return out;
 }
 
-export function addArtifact(run: RunState, s: RunStats, id: string): boolean {
-  if (run.artifacts.includes(id)) return false;
-  const slots = s.beltSlots + (artifactDef(id).id === 'pact' ? 1 : 0);
-  if (run.artifacts.length >= slots) return false;
-  run.artifacts.push(id);
-  return true;
-}
-
-export function sellArtifact(run: RunState, id: string): number {
-  const i = run.artifacts.indexOf(id);
-  if (i < 0) return 0;
-  run.artifacts.splice(i, 1);
-  const price = Math.round(artifactPrice(id, run.layer) / 2);
-  run.coins += price;
-  return price;
-}
-
-export const ARTIFACT_PRICE: Record<Rarity, number> = { common: 10, rare: 18, epic: 30, legendary: 50, cursed: 14 };
-
-export function artifactPrice(id: string, layer: number, mult = 1): number {
-  return priceR(ARTIFACT_PRICE[artifactDef(id).rarity], layer, mult);
-}
-
-export function addConsumable(run: RunState, s: RunStats, id: string, n = 1): boolean {
-  const slot = run.consumables.find((c) => c.id === id);
-  if (slot) {
-    if (slot.n >= CONSUMABLE_STACK) return false;
-    slot.n = Math.min(CONSUMABLE_STACK, slot.n + n);
-    return true;
+export function makeStation(meta: MetaState, run: RunState, kind: StationState['kind'], rng: Rng): StationState {
+  const st: StationState = { kind, shop: randomItems(meta, run, rng, 3, null), rerolls: 0, reward: null, rewardLeft: 0, forced: null, healBought: 0 };
+  if (kind === 'boss') {
+    st.reward = randomItems(meta, run, rng, 3, 'rare');
+    st.rewardLeft = 1;
+    const next = layerDef(run.layer + 1);
+    if (run.layer >= 10) st.forced = 'Дальше только Сердце Мира. Этот путь откроется в следующих обновлениях.';
+    else if (!next.ready) st.forced = `Пласт ${next.id} «${next.name}» ещё копают строители. Скоро обновление!`;
   }
-  if (run.consumables.length >= s.consumableSlots) return false;
-  run.consumables.push({ id, n: Math.min(CONSUMABLE_STACK, n) });
-  return true;
-}
-
-export function takeConsumable(run: RunState, id: string): boolean {
-  const slot = run.consumables.find((c) => c.id === id);
-  if (!slot || slot.n <= 0) return false;
-  slot.n--;
-  if (slot.n <= 0) run.consumables.splice(run.consumables.indexOf(slot), 1);
-  return true;
-}
-
-/** Станция после пройденного яруса типа kind. Вызывать после того, как run.step указывает на пройденный ряд. */
-export function makeStation(meta: MetaState, run: RunState, kind: NodeType, rng: Rng): StationState {
-  const s = computeStats(meta, run);
-  const st: StationState = {
-    kind, eventSeed: rng.seed(), offer: null, offerExtra: false, shop: [], consumablesForSale: [],
-    eventId: null, eventResult: null, restDone: kind !== 'rest', next: [], forcedEnd: null, kitLeft: 0,
-  };
-  run.drinksBought = 0;
-  run.rerolls = 0;
-  run.freeRerollUsed = false;
-  if (kind === 'danger') st.offer = randomArtifacts(meta, run, rng, 3, 'rare', 0.15);
-  if (kind === 'boss') st.offer = randomArtifacts(meta, run, rng, 3, 'rare');
-  if (kind === 'fair') {
-    st.shop = randomArtifacts(meta, run, rng, 3, 'common');
-    st.consumablesForSale = ['dynamite', 'ladder', 'stew', 'scan', 'bomb'];
-  }
-  if (kind === 'cache') {
-    const pool = EVENTS.filter((e) => (e.minLayer ?? 1) <= run.layer);
-    st.eventId = rng.pick(pool).id;
-  }
-  if (run.artifacts.includes('piggy')) run.coins += Math.min(Math.round(run.coins * 0.1), Math.round(20 * layerR(run.layer)));
-  if (run.artifacts.includes('plantain') && rng.chance(0.25)) run.hearts = Math.min(s.maxHearts, run.hearts + 1);
-
-  if (run.step < run.map.length - 1) {
-    st.next = run.map[run.step + 1];
-  } else {
-    const blocker = layerBlocker(meta, run.layer + 1);
-    if (blocker) st.forcedEnd = blocker;
-    else st.next = genLayerMap(rng.seed(), false)[0];
-  }
+  if (kind !== 'start') alchemy(run, stack(run, 'alchemy'));
   return st;
 }
 
-/** Переход к выбранному узлу: сдвигает ряд/пласт. Возвращает тип яруса. */
-export function advance(run: RunState, node: NodeType, rng: Rng): NodeType {
+/** Котелок алхимика: 10 самой дешёвой руды становятся 4 рудами подороже. */
+function alchemy(run: RunState, n: number): void {
+  for (let k = 0; k < n; k++) {
+    const have = ORES.filter((o) => (run.bag[o.key] ?? 0) >= 10 && o.kind !== 'coal').sort((a, b) => a.value - b.value);
+    if (!have.length) return;
+    const from = have[0];
+    const to = ORES.filter((o) => o.value > from.value && o.kind === from.kind).sort((a, b) => a.value - b.value)[0];
+    if (!to) return;
+    run.bag[from.key] -= 10;
+    run.bag[to.key] = (run.bag[to.key] ?? 0) + 4;
+  }
+}
+
+/** Этаж пройден: привал (после Разлома - с наградой и лифтом наверх). */
+export function completeFloor(meta: MetaState, run: RunState, rng: Rng): string[] {
+  run.floorsDone++;
+  // передышка на привале
+  const s = computeStats(meta, run);
+  run.hp = Math.min(s.maxHp, run.hp + Math.ceil(s.maxHp * 0.25));
+  meta.stats.bestDepth = Math.max(meta.stats.bestDepth, depthOf(run) + 100);
+  const news = run.floor >= 2 ? onBossBeaten(meta, run) : [];
+  run.station = makeStation(meta, run, run.floor >= 2 ? 'boss' : 'floor', rng);
+  return news;
+}
+
+/** С привала вниз: следующий этаж или следующий пласт. */
+export function advance(run: RunState): void {
   const st = run.station;
-  if (st && st.kind === 'boss' && run.step >= run.map.length - 1) {
+  if (st?.kind === 'boss') {
     run.layer += 1;
-    run.map = genLayerMap(rng.seed(), false);
-    run.map[0] = st.next;
-    run.step = 0;
-  } else if (st && st.kind !== 'start') {
-    run.step += 1;
+    run.floor = 0;
+  } else if (st?.kind === 'floor') {
+    run.floor += 1;
   }
+  if (st && st.kind !== 'start') run.tutorial = false;
   run.station = null;
-  return node;
 }
 
-export type ShopItem = 'drink' | 'stew' | 'dynamite' | 'ladder' | 'repair' | 'scan' | 'bomb';
+export const depthOf = (run: RunState): number => (run.layer - 1) * 300 + run.floor * 100;
 
-export function shopPrice(run: RunState, s: RunStats, item: ShopItem): number {
-  const base = item === 'scan' || item === 'bomb' ? consumableDef(item).price : PRICES[item];
-  return priceR(base, run.layer, s.shopMult);
+// ---------------- кузница ----------------
+
+export interface ForgeInfo {
+  kind: ToolKind;
+  cur: ToolTier;
+  next: ToolTier | null;
+  have: Record<string, number>;
+  can: boolean;
+  sharpen: number;
+  sharpenMax: number;
+  sharpenCost: number;
 }
 
-export function canBuy(run: RunState, s: RunStats, item: ShopItem): string | null {
-  if (run.coins < shopPrice(run, s, item)) return 'Мало монет';
-  if (item === 'drink') {
-    if (run.drinksBought >= DRINKS_PER_STATION) return 'Закончились';
-    if (run.energy >= s.maxEnergy) return 'Энергия полная';
+export function forgeInfo(run: RunState, kind: ToolKind): ForgeInfo {
+  const list = kind === 'pick' ? PICKS : SWORDS;
+  const tier = kind === 'pick' ? run.pickTier : run.swordTier;
+  const next = list[tier + 1] ?? null;
+  const have: Record<string, number> = {};
+  let can = !!next;
+  if (next) for (const [k, n] of Object.entries(next.recipe)) {
+    have[k] = run.bag[k] ?? 0;
+    if (have[k] < n) can = false;
   }
-  if (item === 'repair' && run.hearts >= s.maxHearts) return 'Каска цела';
-  if (item !== 'drink' && item !== 'repair') {
-    const slot = run.consumables.find((c) => c.id === item);
-    if (slot ? slot.n >= CONSUMABLE_STACK : run.consumables.length >= s.consumableSlots) return 'Нет места';
-  }
-  return null;
+  const lvl = kind === 'pick' ? run.pickSharpen : run.swordSharpen;
+  const star = stack(run, 'starforge') > 0;
+  return { kind, cur: list[tier], next, have, can, sharpen: lvl, sharpenMax: SHARPEN_MAX * (star ? 2 : 1),
+    sharpenCost: Math.round(sharpenCost(kind, star ? Math.floor(lvl / 2) : lvl) * priceMult(run.layer)) };
 }
 
-export function buy(run: RunState, s: RunStats, item: ShopItem): boolean {
-  if (canBuy(run, s, item)) return false;
-  run.coins -= shopPrice(run, s, item);
-  if (item === 'drink') {
-    run.drinksBought++;
-    run.energy = Math.min(Math.round(s.maxEnergy * 1.5), run.energy + Math.round(s.maxEnergy * DRINK_PCT));
-  } else if (item === 'repair') {
-    run.hearts = Math.min(s.maxHearts, run.hearts + 1);
-  } else {
-    addConsumable(run, s, item);
-  }
+export function forge(run: RunState, kind: ToolKind): boolean {
+  const f = forgeInfo(run, kind);
+  if (!f.can || !f.next) return false;
+  for (const [k, n] of Object.entries(f.next.recipe)) run.bag[k] -= n;
+  if (kind === 'pick') run.pickTier++;
+  else run.swordTier++;
   return true;
 }
 
-export function rerollPrice(run: RunState, s: RunStats): number {
-  return priceR(PRICES.reroll + run.rerolls, run.layer, s.shopMult);
+export function sharpen(run: RunState, kind: ToolKind): boolean {
+  const f = forgeInfo(run, kind);
+  if (f.sharpen >= f.sharpenMax || run.coins < f.sharpenCost) return false;
+  run.coins -= f.sharpenCost;
+  const add = stack(run, 'starforge') > 0 ? 2 : 1;
+  if (kind === 'pick') run.pickSharpen = Math.min(f.sharpenMax, run.pickSharpen + add);
+  else run.swordSharpen = Math.min(f.sharpenMax, run.swordSharpen + add);
+  return true;
 }
 
-export function restOptions(run: RunState, s: RunStats): { id: 'energy' | 'heart' | 'tool'; label: string; can: boolean }[] {
-  const pct = Math.round(REST_ENERGY_PCT * s.restMult * 100);
+// ---------------- лавка ----------------
+
+export const itemPrice = (run: RunState, id: string, mult = 1): number =>
+  Math.round(RARITY_PRICE[itemDef(id).rarity] * priceMult(run.layer) * mult);
+
+export function addItem(meta: MetaState, run: RunState, id: string): void {
+  const before = computeStats(meta, run).maxHp;
+  run.items[id] = (run.items[id] ?? 0) + 1;
+  if (id === 'crystalheart') run.extraLives++;
+  const s = computeStats(meta, run);
+  if (s.maxHp > before) run.hp += s.maxHp - before;
+  clampHp(run, s);
+}
+
+export function buyShopItem(meta: MetaState, run: RunState, idx: number): boolean {
+  const st = run.station;
+  const id = st?.shop[idx];
+  if (!st || !id) return false;
+  const price = itemPrice(run, id);
+  if (run.coins < price) return false;
+  run.coins -= price;
+  st.shop[idx] = '';
+  addItem(meta, run, id);
+  return true;
+}
+
+export const rerollPrice = (run: RunState): number => Math.round((8 + 6 * (run.station?.rerolls ?? 0)) * priceMult(run.layer));
+
+export function reroll(meta: MetaState, run: RunState, rng: Rng): boolean {
+  const st = run.station;
+  if (!st) return false;
+  const price = rerollPrice(run);
+  if (run.coins < price) return false;
+  run.coins -= price;
+  st.rerolls++;
+  st.shop = randomItems(meta, run, rng, 3, null);
+  return true;
+}
+
+export function chooseReward(meta: MetaState, run: RunState, id: string): void {
+  const st = run.station;
+  if (!st?.reward?.includes(id) || st.rewardLeft <= 0) return;
+  addItem(meta, run, id);
+  st.rewardLeft--;
+  if (st.rewardLeft <= 0) st.reward = null;
+  else st.reward = st.reward.filter((x) => x !== id);
+}
+
+export type Supply = 'heal' | 'bomb' | 'coal' | 'scanner';
+
+export function supplyPrice(run: RunState, what: Supply): number {
+  const base = { heal: 12 + 10 * (run.station?.healBought ?? 0), bomb: 14, coal: 8, scanner: 10 }[what];
+  return Math.round(base * priceMult(run.layer));
+}
+
+export function supplyBlocked(meta: MetaState, run: RunState, what: Supply): string | null {
+  if (run.coins < supplyPrice(run, what)) return 'Мало монет';
+  if (what === 'heal' && run.hp >= computeStats(meta, run).maxHp) return 'Здоровье полное';
+  return null;
+}
+
+export function buySupply(meta: MetaState, run: RunState, what: Supply): boolean {
+  if (supplyBlocked(meta, run, what)) return false;
+  run.coins -= supplyPrice(run, what);
+  if (what === 'heal') {
+    const s = computeStats(meta, run);
+    run.hp = Math.min(s.maxHp, run.hp + Math.ceil(s.maxHp * 0.5));
+    if (run.station) run.station.healBought++;
+  } else if (what === 'bomb') run.bombs++;
+  else if (what === 'coal') run.bag.coal = (run.bag.coal ?? 0) + 3;
+  else run.scanners++;
+  return true;
+}
+
+/** Самоцветы и лишний металл на продажу: всё, кроме угля и руды для ближайшей ковки. */
+export function sellable(run: RunState): { key: string; n: number; value: number }[] {
+  const keep = new Set<string>(['coal']);
+  for (const kind of ['pick', 'sword'] as const) {
+    const f = forgeInfo(run, kind);
+    if (f.next) for (const k of Object.keys(f.next.recipe)) keep.add(k);
+  }
+  return Object.entries(run.bag)
+    .filter(([k, n]) => n > 0 && !keep.has(k))
+    .map(([k, n]) => ({ key: k, n, value: oreByKey(k).value * n }));
+}
+
+export function sellOre(run: RunState, key: string): number {
+  const n = run.bag[key] ?? 0;
+  if (n <= 0) return 0;
+  const v = oreByKey(key).value * n;
+  run.bag[key] = 0;
+  run.coins += v;
+  return v;
+}
+
+// ---------------- комнаты этажа: торговец, алтарь, наковальня ----------------
+
+export interface PropOffer {
+  id: string;
+  title: string;
+  desc: string;
+  price: number;
+  item?: string;
+}
+
+export function merchantStock(meta: MetaState, run: RunState, rng: Rng): string[] {
+  return randomItems(meta, run, rng, 3, null);
+}
+
+export function shrineOffers(meta: MetaState, run: RunState): PropOffer[] {
+  const s = computeStats(meta, run);
+  const blood = Math.ceil(s.maxHp * 0.25);
   return [
-    { id: 'energy', label: `Поспать: +${pct}% энергии`, can: true },
-    { id: 'heart', label: 'Подлатать каску: +1 сердце', can: run.hearts < s.maxHearts },
-    { id: 'tool', label: `Заточить инструмент: уровень ${run.toolLevel + 1}`, can: run.toolLevel < TOOL_MAX_LEVEL },
+    { id: 'blood', title: 'Кровавая жертва', desc: `Отдать ${blood} здоровья: редкий предмет.`, price: blood },
+    { id: 'dark', title: 'Тёмный дар', desc: 'Проклятый предмет и редкий в придачу.', price: 0 },
+    { id: 'gold', title: 'Подношение', desc: 'Монеты за полное лечение и обычный предмет.', price: Math.round(30 * priceMult(run.layer)) },
   ];
 }
 
-export function rest(run: RunState, s: RunStats, choice: 'energy' | 'heart' | 'tool'): void {
-  if (choice === 'energy') run.energy = Math.min(Math.round(s.maxEnergy * 1.5), run.energy + Math.round(s.maxEnergy * REST_ENERGY_PCT * s.restMult));
-  if (choice === 'heart') run.hearts = Math.min(s.maxHearts, run.hearts + 1);
-  if (choice === 'tool') run.toolLevel = Math.min(TOOL_MAX_LEVEL, run.toolLevel + 1);
-}
-
-export function useStew(run: RunState, s: RunStats): void {
-  run.energy = Math.min(Math.round(s.maxEnergy * 1.5), run.energy + Math.round(s.maxEnergy * STEW_PCT * s.foodMult));
-}
-
-export function eventChoices(st: StationState): { title: string; text: string; choices: EventChoice[] } | null {
-  if (!st.eventId) return null;
-  const ev = eventDef(st.eventId);
-  if (!ev) return null;
-  if (ev.id === 'riddle') {
-    const r = riddleChoices(new Rng(st.eventSeed));
-    return { title: ev.title, text: r.text, choices: r.choices };
+/** Выбор у алтаря. Возвращает полученные предметы или null, если не хватает. */
+export function useShrine(meta: MetaState, run: RunState, id: string, rng: Rng): string[] | null {
+  const offer = shrineOffers(meta, run).find((o) => o.id === id);
+  if (!offer) return null;
+  const got: string[] = [];
+  if (id === 'blood') {
+    if (run.hp <= offer.price) return null;
+    run.hp -= offer.price;
+    got.push(...randomItems(meta, run, rng, 1, 'rare'));
+  } else if (id === 'dark') {
+    const cursed = itemPool(meta, run, 'cursed');
+    if (cursed.length) got.push(rng.pick(cursed));
+    got.push(...randomItems(meta, run, rng, 1, 'rare'));
+  } else {
+    if (run.coins < offer.price) return null;
+    run.coins -= offer.price;
+    got.push(...randomItems(meta, run, rng, 1, 'common'));
   }
-  return { title: ev.title, text: ev.text, choices: ev.choices };
+  for (const it of got) addItem(meta, run, it);
+  if (id === 'gold') run.hp = computeStats(meta, run).maxHp;
+  return got;
 }
 
-export function makeEventCtx(meta: MetaState, run: RunState, rng: Rng): EventCtx {
-  const stats = () => computeStats(meta, run);
-  return {
-    run, rng,
-    R: layerR(run.layer),
-    maxEnergy: stats().maxEnergy,
-    addArtifact: (id) => addArtifact(run, stats(), id),
-    randomArtifact: (min, cursed) => (cursed
-      ? randomArtifacts(meta, run, rng, 1, min, 1)[0] ?? null
-      : randomArtifacts(meta, run, rng, 1, min)[0] ?? null),
-    artifactName: (id) => artifactDef(id).name,
-    addConsumable: (id, n = 1) => addConsumable(run, stats(), id, n),
-    damage: (n) => { run.hearts = Math.max(1, run.hearts - n); },
-    heal: (n) => { run.hearts = Math.min(stats().maxHearts, run.hearts + n); },
-    energy: (pct) => {
-      const s = stats();
-      run.energy = Math.max(1, Math.min(Math.round(s.maxEnergy * 1.5), run.energy + Math.round(s.maxEnergy * pct)));
-    },
-    coins: (n) => { run.coins = Math.max(0, run.coins + n); },
-  };
+export function useAnvil(run: RunState, kind: ToolKind): void {
+  const max = SHARPEN_MAX * (stack(run, 'starforge') > 0 ? 2 : 1);
+  if (kind === 'pick') run.pickSharpen = Math.min(max, run.pickSharpen + 2);
+  else run.swordSharpen = Math.min(max, run.swordSharpen + 2);
 }
+
+// ---------------- итоги ----------------
 
 export interface RunOutcome extends IngotResult {
   reason: 'cashout' | 'evac';
@@ -285,51 +327,50 @@ export interface RunOutcome extends IngotResult {
   unlocks: string[];
 }
 
-/** Итог забега: начисляет слитки и статистику, проверяет открытия. */
+export function evacKeep(meta: MetaState): number {
+  return Math.min(1, EVAC_KEEP + 0.05 * buildingLevel(meta, 'insurance'));
+}
+
+/** Итог забега: слитки, статистика, открытия героев. */
 export function finishRun(meta: MetaState, run: RunState, reason: 'cashout' | 'evac'): RunOutcome {
-  const s = computeStats(meta, run);
-  const keep = reason === 'cashout' ? 1 : Math.min(1, s.evacKeep);
+  const keep = reason === 'cashout' ? 1 : evacKeep(meta);
   const res = computeIngots(meta, run, keep);
-  const depth = (run.startLayer - 1) * 300 + run.tiers * 100;
+  const depth = depthOf(run) + (run.station ? 100 : 0);
   meta.ingots += res.ingots;
   meta.stats.runs += 1;
   meta.stats.totalHaul += run.haul;
-  meta.stats.blocks += run.blocks;
   meta.stats.bestDepth = Math.max(meta.stats.bestDepth, depth);
-  if (reason === 'cashout') { meta.stats.cashOuts += 1; meta.firstCashOut = true; } else meta.stats.evacs += 1;
-  for (const key of Object.keys(run.ore)) if (!meta.stats.oreTypes.includes(key)) meta.stats.oreTypes.push(key);
+  if (reason === 'cashout') {
+    meta.stats.cashOuts += 1;
+    meta.firstCashOut = true;
+  } else meta.stats.evacs += 1;
   const wasTutorial = !meta.tutorialDone;
   meta.tutorialDone = true;
   const unlocks = checkUnlocks(meta);
-  if (wasTutorial) unlocks.unshift('Обучение пройдено: теперь у тебя выбор из нескольких наследников с чертами.');
+  if (wasTutorial) unlocks.unshift('Первая экспедиция позади. Дальше этажи сложнее, зато больше комнат и наград.');
   return { ...res, reason, depth, unlocks };
 }
 
 export function checkUnlocks(meta: MetaState): string[] {
   const out: string[] = [];
-  for (const p of PROFESSIONS) {
-    if (p.unlock && !meta.professions.includes(p.id) && p.unlock.check(meta)) {
-      meta.professions.push(p.id);
-      out.push(`Новая профессия: ${p.name}!`);
+  for (const h of HEROES) {
+    if (h.unlock && !meta.heroes.includes(h.id) && h.unlock.check(meta)) {
+      meta.heroes.push(h.id);
+      out.push(`Новый герой: ${h.name}, ${h.title.toLowerCase()}!`);
     }
   }
   return out;
 }
 
-/** Разлом пройден: лифт, чертёж, новые артефакты в пуле. */
+/** Разлом пройден: лифт, новые предметы в шахте. */
 export function onBossBeaten(meta: MetaState, run: RunState): string[] {
   const out: string[] = [];
-  if (!run.bossesThisRun.includes(run.layer)) run.bossesThisRun.push(run.layer);
-  if (meta.bosses.includes(run.layer)) return out;
-  meta.bosses.push(run.layer);
-  if (layerDef(run.layer + 1).ready) out.push(`Открыт лифт к пласту ${run.layer + 1}.`);
-  const gear = GEAR.find((g) => g.from === run.layer);
-  if (gear && !meta.blueprints.includes(gear.id)) {
-    meta.blueprints.push(gear.id);
-    out.push(`Чертёж: ${gear.name}. Снаряжение можно собрать в посёлке.`);
+  if (!meta.bosses.includes(run.layer)) {
+    meta.bosses.push(run.layer);
+    if (layerDef(run.layer + 1).ready) out.push(`Открыт лифт к пласту ${run.layer + 1}.`);
+    const fresh = ITEMS.filter((x) => x.pool === run.layer).length;
+    if (fresh) out.push(`В шахте появились новые предметы: ${fresh}.`);
   }
-  const fresh = ARTIFACTS.filter((x) => x.pool === run.layer).length;
-  if (fresh) out.push(`В шахте появились новые артефакты: ${fresh}.`);
   out.push(...checkUnlocks(meta));
   return out;
 }

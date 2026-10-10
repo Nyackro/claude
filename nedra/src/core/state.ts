@@ -1,24 +1,22 @@
-import type { NodeType } from './gen';
-
 export interface MetaStats {
   runs: number;
+  kills: number;
+  ore: number;
   exploded: number;
-  oreTypes: string[];
+  torches: number;
   bestDepth: number;
   totalHaul: number;
   cashOuts: number;
   evacs: number;
-  blocks: number;
 }
 
 export interface MetaState {
-  v: 1;
+  v: 2;
   ingots: number;
   buildings: Record<string, number>;
-  gear: string[];
-  blueprints: string[];
   bosses: number[];
-  professions: string[];
+  heroes: string[];
+  hero: string;
   stats: MetaStats;
   purchases: { noAds: boolean; goldenSmelter: boolean; starter: boolean };
   settings: { sound: boolean; music: boolean };
@@ -27,75 +25,50 @@ export interface MetaState {
   giftClaimed: boolean;
 }
 
-export interface Heir {
-  name: string;
-  female: boolean;
-  profession: string;
-  trait: string | null;
-}
-
-export interface Consumable {
-  id: string;
-  n: number;
-}
-
 export interface StationState {
-  kind: NodeType | 'start';
-  eventSeed: number;
-  offer: string[] | null;     // выбор артефакта (элита, Разлом, набор с лифта)
-  offerExtra: boolean;        // взят ли 4-й вариант за рекламу
-  shop: string[];             // артефакты на продажу (Ярмарка)
-  consumablesForSale: string[];
-  eventId: string | null;
-  eventResult: string | null;
-  restDone: boolean;
-  next: NodeType[];
-  forcedEnd: string | null;
-  kitLeft: number;            // сколько артефактов набора экспедиции осталось выбрать
+  kind: 'start' | 'floor' | 'boss';
+  shop: string[];
+  rerolls: number;
+  reward: string[] | null;     // выбор предмета после Разлома или набора с лифта
+  rewardLeft: number;
+  forced: string | null;       // почему дальше нельзя
+  healBought: number;
 }
 
 export interface RunState {
   seed: number;
-  heir: Heir;
+  hero: string;
   startLayer: number;
   layer: number;
-  step: number;               // 0, 1 - обычные ряды, 2 - Разлом
-  map: NodeType[][];
-  energy: number;
-  hearts: number;
+  floor: number;               // 0, 1 - обычные этажи, 2 - Разлом
+  hp: number;
   coins: number;
-  haul: number;
-  ore: Record<string, number>;
-  gemTypes: string[];
-  artifacts: string[];
-  consumables: Consumable[];
-  toolLevel: number;
-  tiers: number;
+  haul: number;                // всё добытое (руда по цене + монеты), из этого считаются слитки
+  bag: Record<string, number>;
+  items: Record<string, number>;
+  pickTier: number;
+  pickSharpen: number;
+  swordTier: number;
+  swordSharpen: number;
+  bombs: number;
+  scanners: number;
+  floorsDone: number;
+  kills: number;
   revived: boolean;
   tutorial: boolean;
-  drinksBought: number;
-  rerolls: number;
-  freeRerollUsed: boolean;
-  heirRerollUsed: boolean;
-  beltBonus: number;
-  oreBlessing: number;        // +x к множителю руды от событий
-  chestBlessing: number;
-  pet: string | null;
+  extraLives: number;
   station: StationState | null;
-  bossesThisRun: number[];
-  blocks: number;
 }
 
 export function newMeta(): MetaState {
   return {
-    v: 1,
+    v: 2,
     ingots: 0,
     buildings: {},
-    gear: [],
-    blueprints: [],
     bosses: [],
-    professions: ['miner'],
-    stats: { runs: 0, exploded: 0, oreTypes: [], bestDepth: 0, totalHaul: 0, cashOuts: 0, evacs: 0, blocks: 0 },
+    heroes: ['miner'],
+    hero: 'miner',
+    stats: { runs: 0, kills: 0, ore: 0, exploded: 0, torches: 0, bestDepth: 0, totalHaul: 0, cashOuts: 0, evacs: 0 },
     purchases: { noAds: false, goldenSmelter: false, starter: false },
     settings: { sound: true, music: true },
     firstCashOut: false,
@@ -104,4 +77,4 @@ export function newMeta(): MetaState {
   };
 }
 
-export const has = (run: RunState | null | undefined, id: string): boolean => !!run && run.artifacts.includes(id);
+export const stack = (run: RunState | null | undefined, id: string): number => (run ? run.items[id] ?? 0 : 0);
