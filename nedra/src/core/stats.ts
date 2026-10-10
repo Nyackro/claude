@@ -3,6 +3,7 @@ import { BASE_HP, BASE_SPEED, LIGHT_BASE, MAGNET, MINE_INTERVAL, SHARPEN_STEP, S
 import { heroDef } from '../data/heroes';
 import { ITEM_BY_ID } from '../data/items';
 import { buildingLevel } from '../data/meta';
+import { applyNpcStats, npcLevel } from '../data/npcs';
 import { PICKS, SWORDS } from '../data/tools';
 import type { MetaState, RunState } from './state';
 
@@ -52,6 +53,8 @@ export interface PlayerStats {
   rhythm: number;
   berserk: number;
   enemyHp: number;
+  zoneResist: number;
+  drone: number;
 }
 
 export function baseStats(): PlayerStats {
@@ -62,6 +65,7 @@ export function baseStats(): PlayerStats {
     coinMult: 1, killCoins: 1, oreValue: 1, doubleOre: 0, healMult: 1, healOnKill: 0, regen: 0, thorns: 0, block: 0,
     lifesteal: 0, explRadius: 1, explDmg: 1, explSafe: false, projBonus: 0, bounce: 0, oreSight: 0, freeTorchEvery: 0,
     mushrooms: 0, cdMult: 1, wideMine: 0, drillDepth: 0, rush: 0, rhythm: 0, berserk: 0, enemyHp: 1,
+    zoneResist: 1, drone: 0,
   };
 }
 
@@ -73,6 +77,8 @@ export function computeStats(meta: MetaState, run: RunState): PlayerStats {
   s.pickPower = pick.power * (1 + SHARPEN_STEP * run.pickSharpen) * (1 + 0.1 * buildingLevel(meta, 'forge'));
   s.swordDmg = sword.power * (1 + SHARPEN_STEP * run.swordSharpen) * (1 + 0.1 * buildingLevel(meta, 'armory'));
   s.maxHp += 4 * buildingLevel(meta, 'infirmary');
+  applyNpcStats(meta, s);
+  s.drone = npcLevel(meta, 'drone');
   heroDef(run.hero).apply(s);
   for (const [id, n] of Object.entries(run.items)) if (n > 0) ITEM_BY_ID.get(id)?.stats?.(s, n);
   s.maxHp = Math.max(1, Math.round(s.maxHp));

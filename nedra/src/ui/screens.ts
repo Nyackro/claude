@@ -1,6 +1,7 @@
 // Экраны: посёлок, выбор героя, привал (кузница, лавка, припасы), комнаты этажа, пауза, итоги.
 import { computeIngots } from '../core/economy';
-import { availableLifts, buyShopItem, buySupply, chooseReward, evacKeep, forge, forgeInfo, itemPrice, merchantStock, reroll,
+import { PICK_TIER_NAME } from '../core/blocks';
+import { availableLifts, buyNpcUpgrade, buyShopItem, buySupply, chooseReward, evacKeep, forge, forgeInfo, itemPrice, merchantStock, npcUpgrades, priceMult, reroll,
   rerollPrice, sellable, sellOre, sharpen, shrineOffers, supplyBlocked, supplyPrice, useAnvil, useShrine, addItem, randomItems,
   type ForgeInfo, type Supply, type ToolKind } from '../core/run';
 import { stack } from '../core/state';
@@ -10,6 +11,7 @@ import { HEROES, heroDef, type HeroDef } from '../data/heroes';
 import { ITEMS, itemDef, RARITY_NAME } from '../data/items';
 import { layerDef } from '../data/layers';
 import { BUILDINGS, buildingCost, buildingLevel, PRODUCTS } from '../data/meta';
+import { NPCS, npcDef, nextCaptive, type NpcDef } from '../data/npcs';
 import { oreByKey } from '../data/ores';
 import type { PropState } from '../game/floor';
 import type { Game } from '../game/game';
@@ -52,6 +54,65 @@ function portrait(game: Game, hero: HeroDef, size = 64): HTMLElement {
   return c;
 }
 
+/** Портрет спасённого мастера (или чёрный силуэт того, кто ещё в плену). */
+function npcPortrait(game: Game, id: string, size = 48, shadow = false): HTMLElement {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  c.className = 'portrait';
+  const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  if (shadow) ctx.filter = 'brightness(0)';
+  const spr = game.npcSprite(id);
+  if (spr) ctx.drawImage(spr, 0, 0, size, size);
+  return c;
+}
+
+function npcCard(game: Game, n: NpcDef): HTMLElement {
+  const m = game.meta;
+  if (m.rescued.includes(n.id)) {
+    const ups = npcUpgrades(m, n.id);
+    const done = ups.reduce((a, u) => a + u.lvl, 0), total = ups.reduce((a, u) => a + u.max, 0);
+    const can = ups.some((u) => u.next && m.ingots >= u.cost);
+    return h('button', { class: `card npc ${can ? 'can' : ''}`, onclick: () => showNpc(game, n.id) },
+      h('div', { class: 'hero-head' }, npcPortrait(game, n.id),
+        h('div', null, h('div', { class: 'name' }, `${n.name}, ${n.title}`), h('div', { class: 'level' }, `${n.hall} · ${done}/${total}`))),
+      can ? h('div', { class: 'desc good' }, 'Есть что улучшить') : null);
+  }
+  const next = nextCaptive(m)?.id === n.id;
+  const L = layerDef(n.layer);
+  return h('div', { class: 'card locked' },
+    h('div', { class: 'hero-head' }, npcPortrait(game, n.id, 48, true),
+      h('div', null, h('div', { class: 'name' }, next ? `${n.name}, ${n.title}` : '???'),
+        h('div', { class: 'desc' }, next ? `В плену: пласт ${n.layer} «${L.name}», этаж ${n.floor + 1}. Перебей стражу и коснись клетки.`
+          : 'Сначала спаси предыдущего пленника.'))));
+}
+
+function showNpc(game: Game, id: string): void {
+  const m = game.meta, n = npcDef(id);
+  const draw = (): void => {
+    game.closeModal();
+    modal(game,
+      h('div', { class: 'hero-head' }, npcPortrait(game, id, 56), h('div', null, h('h3', null, n.hall), h('div', { class: 'note' }, `«${n.greet}»`))),
+      h('div', { class: 'title' }, h('span', { class: 'note' }, 'Улучшения навсегда'), ingotsTxt(m.ingots)),
+      h('div', { class: 'shop' }, ...npcUpgrades(m, id).map((u) => h('div', { class: 'shop-row' },
+        h('div', { class: 'shop-txt' },
+          h('div', { class: 'name' }, `${u.name} `, h('span', { class: 'level' }, `${u.lvl}/${u.max}`)),
+          h('div', { class: 'desc' }, u.next ? (u.lvl ? `${u.now} → ${u.next}` : u.next) : u.now)),
+        h('button', {
+          class: 'btn small', disabled: !u.next || m.ingots < u.cost,
+          onclick: () => {
+            if (!buyNpcUpgrade(m, u.id)) return;
+            game.audio.coin();
+            game.save();
+            renderBase(game);
+            draw();
+          },
+        }, u.next ? h('span', null, icon('ingot'), fmt(u.cost)) : 'Макс.')))),
+      h('button', { class: 'btn ghost', onclick: () => game.closeModal() }, 'Назад'));
+  };
+  draw();
+}
+
 // ---------------- Посёлок ----------------
 
 export function renderBase(game: Game): void {
@@ -89,9 +150,11 @@ export function renderBase(game: Game): void {
     h('button', { class: 'btn big', onclick: () => chooseLift(game) }, icon('pick'), 'В шахту'),
     h('p', { class: 'note' }, `Рекорд глубины: ${m.stats.bestDepth} м · Экспедиций: ${m.stats.runs} · Разломов: ${m.bosses.length} · Лифтов: ${lifts.length}`),
     m.stats.runs < 10 ? h('p', { class: 'note good' }, `Удача новичка: x3 слитков ещё ${10 - m.stats.runs} экспедиций.`) : null,
+    h('div', { class: 'panel' }, h('h3', null, `Мастера из плена: ${m.rescued.length}/${NPCS.length}`),
+      h('div', { class: 'grid', style: 'grid-template-columns:repeat(auto-fill,minmax(220px,1fr))' }, ...NPCS.map((n) => npcCard(game, n)))),
     h('div', { class: 'panel buildings' }, h('h3', null, 'Постройки (навсегда)'), h('div', { class: 'grid' }, ...buildings)),
     h('div', { class: 'panel' }, h('h3', null, 'Как играть'),
-      h('p', { class: 'note' }, 'Копай путь вниз, к лестнице в конце этажа. Темнота скрывает всё, кроме откопанного: ставь факелы (1 уголь = 1 факел). Меч бьёт сам, когда враг рядом. Руду неси на привал: из неё куются кирки и мечи, а монеты идут на заточку и предметы. Боковые комнаты - сундуки, испытания, торговцы и мини-боссы. Каждые 3 этажа - Разлом с боссом. Предметы складываются и цепляются друг за друга: собери сборку, которая сломает шахту.')),
+      h('p', { class: 'note' }, 'Копай путь вниз, к лестнице в конце этажа. Темнота скрывает всё, кроме откопанного: ставь факелы (1 уголь = 1 факел). Меч бьёт сам, когда враг рядом. Руду неси на привал: из неё куются кирки и мечи, а монеты идут на заточку и предметы. Боковые комнаты - сундуки, испытания, торговцы и мини-боссы. Каждый пласт заканчивается Разломом с боссом, на самом дне ждёт Богомирон. В темницах томятся мастера: спаси их, и в посёлке они научат героя новому. Предметы складываются и цепляются друг за друга: собери сборку, которая сломает шахту.')),
     h('div', { class: 'btns' },
       h('button', { class: 'btn ghost', onclick: () => showShop(game) }, icon('gem'), 'Лавка'),
       h('button', { class: 'btn ghost', onclick: () => showSettings(game) }, icon('sound'), 'Настройки')),
@@ -127,12 +190,14 @@ function chooseLift(game: Game): void {
   }
   modal(game,
     h('h3', null, 'Откуда начать?'),
-    h('div', { class: 'grid', style: 'grid-template-columns:1fr' }, ...lifts.map((L) => {
+    h('div', { class: 'grid', style: 'grid-template-columns:1fr' }, ...[...lifts].reverse().map((L) => {
       const def = layerDef(L);
-      return h('button', { class: 'card', onclick: () => { game.closeModal(); game.beginRun(game.meta.hero, L); } },
-        h('div', { class: 'row' }, h('span', { class: 'name' }, `Пласт ${L}: ${def.name}`), h('span', { class: 'level' }, def.depth)),
+      const coins = Math.round(40 * (L - 1) * Math.max(1, priceMult(L) / 2));
+      const bosses = def.bosses.map((b) => enemyDef(b).name).join(' и ');
+      return h('button', { class: `card ${def.cycle ? 'endless' : ''}`, onclick: () => { game.closeModal(); game.beginRun(game.meta.hero, L); } },
+        h('div', { class: 'row' }, h('span', { class: 'name' }, `Пласт ${L} · ${def.name}`), h('span', { class: 'level' }, def.depth)),
         h('div', { class: 'desc' }, L === 1 ? 'С поверхности: +25% слитков, если пройти хотя бы один пласт.'
-          : `Лифт: кирка и меч ${L - 1}-го уровня, ${40 * (L - 1)} монет и предмет на выбор.`));
+          : `Лифт: ${PICK_TIER_NAME[def.kit]} кирка и меч, ${fmt(coins)} монет, ${def.cycle ? `${1 + def.cycle} редких предмета` : 'предмет'} на выбор. Разлом: ${bosses}.`));
     })),
     h('button', { class: 'btn ghost', onclick: () => game.closeModal() }, 'Назад'));
 }
@@ -201,7 +266,7 @@ export function renderStation(game: Game): void {
   const nextFloor = st.kind === 'start' ? 0 : run.floor + 1;
   parts.push(h('div', { class: 'note' }, st.kind === 'boss'
     ? `${L.name} позади. Можно подняться с полной добычей или спуститься глубже.`
-    : `${L.name}. Дальше: ${nextFloor >= 2 ? `Разлом, босс ${enemyDef(L.boss).name}` : `этаж ${nextFloor + 1} из 2`}.`));
+    : `${L.name}. Дальше: ${nextFloor >= 2 ? `Разлом: ${L.bosses.map((b) => enemyDef(b).name).join(' и ')}` : `этаж ${nextFloor + 1} из 2`}.`));
 
   if (st.reward && st.reward.length) {
     parts.push(h('div', { class: 'panel' }, h('h3', null, st.kind === 'boss' ? 'Награда Разлома: выбери предмет' : 'Набор экспедиции: выбери предмет'),

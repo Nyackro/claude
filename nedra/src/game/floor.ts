@@ -6,10 +6,11 @@ import type { Grid } from '../core/grid';
 import { Rng } from '../core/rng';
 import { stack, type MetaState, type RunState } from '../core/state';
 import { clampHp, computeStats, type PlayerStats } from '../core/stats';
-import { enemyDef, type EnemyDef } from '../data/enemies';
+import { enemyDef, type AttackSpec, type EnemyDef, type ZoneKind } from '../data/enemies';
 import { heroDef } from '../data/heroes';
 import { ITEMS, itemDef, type ItemDef } from '../data/items';
-import { layerDef, type LayerDef } from '../data/layers';
+import { npcDef } from '../data/npcs';
+import { dmgScale, hpScale, layerDef, type LayerDef } from '../data/layers';
 import { oreById, oreByKey } from '../data/ores';
 import type { DamageSrc, EnemyRef, FloorApi, ProjKind, ShootOpts } from './api';
 import type { Audio } from './audio';
@@ -26,6 +27,8 @@ export interface FloorEnv {
   died(): void;
   openProp(kind: 'merchant' | 'shrine' | 'anvil', prop: PropState): void;
   itemFound(id: string): void;
+  captive: string | null;
+  rescue(id: string): void;
 }
 
 export interface Enemy extends EnemyRef {
@@ -60,9 +63,29 @@ export interface Enemy extends EnemyRef {
   touchT: number;
   cd2: number;
   side: number;
+  phase: number;
+  atk: AttackSpec | null;
+  ang: number;
+  invuln: number;
+  ghost: number;              // видимость 0..1 (телепорт, нырок)
+  hx: number;                 // «дом»: центр арены или логова
+  hy: number;
+  small: boolean;
+  life: number;               // отражения Богомирона живут недолго
+  shotT: number;
 }
 
-export type EProjKind = 'rock' | 'web' | 'efire' | 'ebomb';
+export type EProjKind = 'rock' | 'web' | 'efire' | 'ebomb' | 'orb' | 'ice' | 'spore' | 'holy' | 'glitch';
+
+export interface ShotOpts {
+  color?: string;
+  home?: number;              // поворот к гному, рад/с
+  wait?: number;              // висит на месте перед полётом
+  accel?: number;             // разгон, раз в секунду
+  r?: number;
+  x?: number;
+  y?: number;
+}
 
 export interface Proj {
   x: number;
@@ -79,15 +102,23 @@ export interface Proj {
   hit: Set<Enemy>;
   tx: number;
   ty: number;
+  color: string | null;
+  home: number;
+  wait: number;
+  accel: number;
 }
 
 export interface Pickup { x: number; y: number; vx: number; vy: number; kind: 'coin' | 'heart' | 'item'; value: number; item: string; t: number }
 export interface Bomb { x: number; y: number; t: number; r: number; dmg: number; safe: boolean; enemy: boolean }
-export interface Torch { x: number; y: number; r: number }
+export interface Torch { x: number; y: number; r: number; hidden?: boolean }
 export interface Cloud { x: number; y: number; r: number; t: number; dps: number }
-export interface FireZone { x: number; y: number; t: number }
+export interface Zone { x: number; y: number; r: number; t: number; max: number; kind: ZoneKind; dmg: number }
+export interface Beam { x: number; y: number; a: number; len: number; w: number; warn: number; t: number; max: number; dmg: number; color: string; spin: number; owner: Enemy | null }
+export interface Wave { x: number; y: number; r: number; speed: number; max: number; gapA: number; gapW: number; dmg: number; color: string; hit: boolean }
+export interface Strike { x: number; y: number; r: number; t: number; max: number; dmg: number; kind: string; square: boolean; zone?: ZoneKind }
+export interface Cine { t: number; dur: number; kind: 'bogo' | 'true' }
 export interface Turret { x: number; y: number; t: number; cd: number }
-export interface Minion { kind: 'bat' | 'golem'; x: number; y: number; cd: number; a: number }
+export interface Minion { kind: 'bat' | 'golem' | 'drone'; x: number; y: number; cd: number; a: number }
 export interface PropState extends Prop { used: boolean; away: boolean; stock: string[] }
 export interface Telegraph { x: number; y: number; r: number; t: number; max: number; ring?: boolean; follow?: Enemy }
 export interface Bolt { pts: { x: number; y: number }[]; t: number }
@@ -136,7 +167,10 @@ export class Floor implements FloorApi {
   bombs: Bomb[] = [];
   torchList: Torch[] = [];
   clouds: Cloud[] = [];
-  fires: FireZone[] = [];
+  zones: Zone[] = [];
+  beams: Beam[] = [];
+  waves: Wave[] = [];
+  strikes: Strike[] = [];
   turrets: Turret[] = [];
   minions: Minion[] = [];
   props: PropState[];
@@ -148,8 +182,11 @@ export class Floor implements FloorApi {
   time = 0;
   paused = false;
   done = false;
-  boss: Enemy | null = null;
+  bosses: Enemy[] = [];
   bossStarted = false;
+  cine: Cine | null = null;
+  glitch = 0;
+  captive: { id: string; x: number; y: number; room: number; open: boolean; done: boolean } | null = null;
   shake = 0;
   flash = 0;
   flashColor = '255,60,40';
@@ -179,7 +216,7 @@ export class Floor implements FloorApi {
     this.layer = layerDef(run.layer);
     this.index = run.floor;
     this.rng = new Rng(seed ^ 0x9e3779b9);
-    this.layout = generateFloor(this.layer, run.floor, seed, run.tutorial && run.floor === 0);
+    this.layout = generateFloor(this.layer, run.floor, seed, run.tutorial && run.floor === 0, env.captive);
     this.g = this.layout.grid;
     const n = this.g.w * this.g.h;
     this.vis = new Uint8Array(n);
@@ -199,7 +236,16 @@ export class Floor implements FloorApi {
     for (const sp of this.layout.spawns) this.spawn(sp.id, sp.x + 0.5, sp.y + 0.5, { sleep: true, elite: sp.elite, room: sp.room });
     this.waveT = run.tutorial && run.floor === 0 ? 9999 : WAVE_FIRST;
     for (const [d, k] of this.items) d.onFloor?.(this, k);
+    const c = this.layout.captive;
+    if (c) this.captive = { ...c, open: false, done: false };
+    // Велемир: руна света, Прокоп: боевой дрон
+    this.shields += env.meta.npcUp.aegis ?? 0;
+    if (this.stats.drone > 0) this.minions.push({ kind: 'drone', x: this.p.x, y: this.p.y, cd: 1, a: 0 });
     this.reveal();
+  }
+
+  get boss(): Enemy | null {
+    return this.bosses.find((b) => !b.dead) ?? null;
   }
 
   // ---------------- служебное ----------------
@@ -228,19 +274,137 @@ export class Floor implements FloorApi {
     return null;
   }
 
-  spawn(id: string, x: number, y: number, o: { sleep?: boolean; elite?: boolean; room?: number } = {}): Enemy {
+  spawn(id: string, x: number, y: number, o: { sleep?: boolean; elite?: boolean; room?: number; small?: boolean } = {}): Enemy {
     const def = enemyDef(id);
-    const scale = (def.boss ? 1 : 1 + 0.12 * this.index) * this.stats.enemyHp * (o.elite ? 2.2 : 1);
-    const hp = Math.round(def.hp * scale);
+    const L = this.layer;
+    const scale = (def.boss ? L.scale.boss : 1 + 0.12 * this.index) * hpScale(L, def.layer) * this.stats.enemyHp * (o.elite ? 2.2 : 1) * (o.small ? 0.35 : 1);
+    const hp = Math.max(1, Math.round(def.hp * scale));
+    let hx = x, hy = y;
+    const a = this.layout.arena;
+    if (a) { hx = (a.x0 + a.x1) / 2 + 0.5; hy = (a.y0 + a.y1) / 2 + 0.5; }
+    else if (o.room) {
+      const r = this.layout.rooms[o.room - 1];
+      if (r) { hx = r.cx + 0.5; hy = r.cy + 0.5; }
+    }
     const e: Enemy = {
-      id, def, x, y, r: def.r * (o.elite ? 1.15 : 1), hp, max: hp, boss: !!def.boss, mini: !!def.mini, dead: false,
+      id, def, x, y, r: def.r * (o.elite ? 1.15 : 1) * (o.small ? 0.7 : 1), hp, max: hp, boss: !!def.boss, mini: !!def.mini, dead: false,
       vx: 0, vy: 0, kx: 0, ky: 0, t: this.rng.next() * 10, cd: 1 + this.rng.next(), state: 'idle', st: 0,
       sleep: !!o.sleep, room: o.room ?? 0, elite: !!o.elite, flash: 0, slowT: 0, slowK: 0, burnT: 0, burnDps: 0, stunT: 0,
       rhythm: 0, digT: 0, fuse: -1, trail: [], tx: x, ty: y, spawnT: 0, under: false, enraged: false, touchT: 0,
       cd2: 2 + this.rng.next() * 2, side: this.rng.chance(0.5) ? 1 : -1,
+      phase: 0, atk: null, ang: this.rng.next() * Math.PI * 2, invuln: 0, ghost: 1, hx, hy, small: !!o.small, life: 0, shotT: 0,
     };
     this.enemies.push(e);
     return e;
+  }
+
+  // ---------------- опасности: зоны, лучи, волны, удары ----------------
+
+  zone(x: number, y: number, r: number, dur: number, kind: ZoneKind, dmg: number): void {
+    if (this.zones.length > 80) this.zones.shift();
+    this.zones.push({ x, y, r, t: dur, max: dur, kind, dmg });
+  }
+
+  beam(o: Omit<Beam, 'max'>): Beam {
+    const b: Beam = { ...o, max: o.t };
+    this.beams.push(b);
+    return b;
+  }
+
+  wave(x: number, y: number, speed: number, dmg: number, color: string, gapW = 1.1, max = 16): void {
+    this.waves.push({ x, y, r: 0.3, speed, max, gapA: this.rng.range(0, Math.PI * 2), gapW, dmg, color, hit: false });
+  }
+
+  strike(x: number, y: number, r: number, t: number, dmg: number, kind: string, square = false, zone?: ZoneKind): void {
+    this.strikes.push({ x, y, r, t, max: t, dmg, kind, square, zone });
+  }
+
+  private updateHazards(dt: number): void {
+    const p = this.p;
+    // лучи
+    for (const b of this.beams) {
+      if (b.owner && !b.owner.dead) { b.x = b.owner.x; b.y = b.owner.y; }
+      if (b.owner?.dead) b.t = 0;
+      if (b.warn > 0) { b.warn -= dt; continue; }
+      b.t -= dt;
+      b.a += b.spin * dt;
+      const ex = b.x + Math.cos(b.a) * b.len, ey = b.y + Math.sin(b.a) * b.len;
+      if (segDist(p.x, p.y, b.x, b.y, ex, ey) < b.w / 2 + p.r * 0.7) this.hurt(b.dmg, null, '');
+    }
+    this.beams = this.beams.filter((b) => b.warn > 0 || b.t > 0);
+    // ударные волны
+    for (const w of this.waves) {
+      w.r += w.speed * dt;
+      if (w.hit) continue;
+      const d = Math.hypot(p.x - w.x, p.y - w.y);
+      if (Math.abs(d - w.r) > 0.35) continue;
+      let da = Math.atan2(p.y - w.y, p.x - w.x) - w.gapA;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      if (Math.abs(da) < w.gapW / 2) continue;
+      w.hit = true;
+      this.hurt(w.dmg, null, '');
+    }
+    this.waves = this.waves.filter((w) => w.r < w.max);
+    // удары с неба, корни, сбой
+    const done: Strike[] = [];
+    for (const st of this.strikes) {
+      st.t -= dt;
+      if (st.t <= 0) done.push(st);
+    }
+    if (done.length) this.strikes = this.strikes.filter((st) => st.t > 0);
+    for (const st of done) {
+      const inside = st.square ? Math.abs(p.x - st.x) < st.r + p.r * 0.5 && Math.abs(p.y - st.y) < st.r + p.r * 0.5
+        : Math.hypot(p.x - st.x, p.y - st.y) < st.r + p.r * 0.5;
+      if (inside) this.hurt(st.dmg, null, '');
+      this.strikeFx(st);
+      if (st.zone) this.zone(st.x, st.y, st.r, 5, st.zone, Math.max(1, Math.round(st.dmg * 0.4)));
+    }
+    // зоны на земле
+    for (const z of this.zones) {
+      z.t -= dt;
+      if (Math.random() < (z.kind === 'fire' ? 0.12 : 0.04)) {
+        if (z.kind === 'fire') this.fx.flame(z.x - 0.5 + this.rng.range(-z.r, z.r) * 0.6, z.y - 0.5 + this.rng.range(-z.r, z.r) * 0.6);
+        else this.fx.puff(z.x + this.rng.range(-z.r, z.r) * 0.6, z.y + this.rng.range(-z.r, z.r) * 0.6, ZONE_PUFF[z.kind]);
+      }
+      if (Math.hypot(p.x - z.x, p.y - z.y) < z.r + p.r * 0.3) {
+        this.hurt(Math.max(1, Math.round(z.dmg * this.stats.zoneResist)), null, ZONE_NAME[z.kind]);
+        if (z.kind === 'ice') p.slowT = Math.max(p.slowT, 0.5);
+      }
+    }
+    this.zones = this.zones.filter((z) => z.t > 0);
+    if (this.glitch > 0) this.glitch = Math.max(0, this.glitch - dt);
+  }
+
+  /** Смена фазы босса: вспышка, крик, гнома отбрасывает. */
+  phaseShift(e: Enemy, say?: string): void {
+    const god = e.def.id.startsWith('bogomiron');
+    this.shake = Math.max(this.shake, 0.7);
+    this.flash = 0.6;
+    this.flashColor = god ? '255,240,200' : '255,120,80';
+    this.fx.ring(e.x, e.y, 5, e.def.color ?? '#ff5a3a', 0.6);
+    this.fx.burst(e.x, e.y, e.def.color ?? '#ff8a3d', 30, 6, 2.6, 0, 0.8);
+    this.env.audio.phase();
+    if (say) this.say(say, 'bad');
+    if (god && e.phase >= 1) this.glitch = Math.max(this.glitch, 1.2);
+    const p = this.p, d = Math.hypot(p.x - e.x, p.y - e.y) || 1;
+    if (d < 3.5) moveBody(p, ((p.x - e.x) / d) * (3.5 - d), ((p.y - e.y) / d) * (3.5 - d), this.solidFor);
+  }
+
+  private strikeFx(st: Strike): void {
+    const color = STRIKE_COLOR[st.kind] ?? '#ffcf6a';
+    this.fx.burst(st.x, st.y, color, st.kind === 'holy' ? 14 : 10, 4, 2.4, 0, 0.5);
+    this.fx.ring(st.x, st.y, st.r, color);
+    if (st.kind === 'holy') {
+      this.fx.pillar(st.x, st.y, 0.45);
+      this.env.audio.holy();
+    } else if (st.kind === 'glitch') {
+      this.glitch = Math.max(this.glitch, 0.25);
+      this.env.audio.glitch();
+    } else if (st.kind === 'rock' || st.kind === 'ice') {
+      this.env.audio.thud();
+      this.shake = Math.max(this.shake, 0.15);
+    } else this.env.audio.boom();
   }
 
   counter(id: string, add = 0): number {
@@ -284,6 +448,14 @@ export class Floor implements FloorApi {
     }
     this.time += dt;
     const run = this.env.run;
+    if (this.cine) {
+      // явление бога: мир замирает
+      this.cine.t += dt;
+      if (this.cine.t >= this.cine.dur) this.endCine();
+      this.revealT -= dt;
+      if (this.revealT <= 0) this.reveal();
+      return;
+    }
     for (const a of actions) this.action(a);
     this.updatePlayer(dt, input);
     this.flowT -= dt;
@@ -297,6 +469,7 @@ export class Floor implements FloorApi {
     this.updateProjs(dt);
     this.updateBombs(dt);
     this.updateZones(dt);
+    this.updateHazards(dt);
     this.updateTurrets(dt);
     this.updateMinions(dt);
     this.updatePickups(dt);
@@ -348,6 +521,11 @@ export class Floor implements FloorApi {
       run.scanners--;
       this.scan(8);
       this.env.toast('Сканер: руда вокруг подсвечена', 'info');
+    } else if (a === 'potion' && run.potions > 0 && run.hp < this.stats.maxHp) {
+      run.potions--;
+      this.heal(Math.ceil(this.stats.maxHp * 0.35 * this.stats.healMult));
+      this.fx.sparkle(this.p.x, this.p.y, '#ff8ab0', 16);
+      this.env.audio.pickup();
     }
   }
 
@@ -649,7 +827,11 @@ export class Floor implements FloorApi {
 
   damage(target: EnemyRef, raw: number, src: DamageSrc): void {
     const e = target as Enemy;
-    if (e.dead || (e.under && src !== 'expl')) return;
+    if (e.dead || (e.under && src !== 'expl') || e.ghost < 0.5) return;
+    if (e.invuln > 0) {
+      if (src === 'sword' && this.rng.chance(0.3)) this.fx.text(e.x, e.y - e.r - 0.4, 'Неуязвим', '#e0e0ff');
+      return;
+    }
     const s = this.stats;
     let dmg = raw;
     if (src !== 'sword' && src !== 'echo' && src !== 'ability') dmg *= s.dmgMult;
@@ -688,6 +870,7 @@ export class Floor implements FloorApi {
     if (s.healOnKill) this.heal(s.healOnKill);
     for (const [d, k] of this.items) d.onKill?.(this, k, e);
     if (e.def.ai === 'queen') for (let k = 0; k < 4; k++) this.spawn('slimeling', e.x + this.rng.range(-0.5, 0.5), e.y + this.rng.range(-0.5, 0.5));
+    this.deathEffect(e);
     if (e.boss) this.onBossDead(e);
     else if (e.mini) {
       this.env.toast(`${e.def.name} повержен!`, 'good');
@@ -695,18 +878,57 @@ export class Floor implements FloorApi {
     }
   }
 
+  /** Посмертные сюрпризы: споры, осколки, огонь, лёд, деление. */
+  private deathEffect(e: Enemy): void {
+    const dmg = Math.max(1, Math.round(e.def.dmg * 0.5 * dmgScale(this.layer, e.def.layer)));
+    switch (e.def.onDeath) {
+      case 'spores':
+        this.zone(e.x, e.y, 1.3, 4, 'poison', Math.max(1, Math.round(dmg * 0.6)));
+        break;
+      case 'fire':
+        this.zone(e.x, e.y, 1.1, 3.5, 'fire', Math.max(1, Math.round(dmg * 0.6)));
+        break;
+      case 'ice':
+        this.zone(e.x, e.y, 1.3, 4, 'ice', Math.max(1, Math.round(dmg * 0.5)));
+        break;
+      case 'shards': {
+        const off = this.rng.next() * Math.PI * 2;
+        for (let k = 0; k < 6; k++) this.enemyShot(e, 'orb', dmg, 5, off + (k / 6) * Math.PI * 2, { color: e.def.color ?? '#bff4ff', r: 0.14 });
+        break;
+      }
+      case 'split':
+        if (!e.small) for (let k = 0; k < 2; k++) {
+          const c = this.spawn(e.id, e.x + this.rng.range(-0.3, 0.3), e.y + this.rng.range(-0.3, 0.3), { small: true, room: e.room });
+          c.spawnT = 0.3;
+        }
+        break;
+    }
+  }
+
   private onBossDead(e: Enemy): void {
     const g = this.g;
+    const left = this.bosses.filter((b) => !b.dead);
     this.shake = 0.8;
     this.flash = 0.6;
     this.flashColor = '255,230,150';
+    const id = this.randomItem(this.rng.chance(0.5) ? 'legendary' : 'rare');
+    if (id) this.dropItem(e.x, e.y, id);
+    if (left.length) {
+      this.env.toast(`${e.def.name} повержен! Остался ещё один`, 'good');
+      this.env.audio.roar();
+      for (const b of left) { b.enraged = true; b.invuln = 0; }
+      return;
+    }
+    // все боссы пали: исчезают их отражения и опасности, открывается спуск
+    for (const o of this.enemies) if (o.def.ai === 'clone') o.dead = true;
+    this.beams = [];
+    this.strikes = [];
+    this.waves = [];
+    this.projs = this.projs.filter((pr) => pr.mine);
     this.env.toast(`${e.def.name} повержен! Проход к спуску открыт`, 'good');
     this.env.audio.fanfare();
     for (let i = 0; i < g.b.length; i++) if (g.b[i] === B.DOOR) { g.b[i] = B.FLOOR; g.hp[i] = 0; }
     this.flowT = 0;
-    const id = this.randomItem(this.rng.chance(0.5) ? 'legendary' : 'rare');
-    if (id) this.dropItem(e.x, e.y, id);
-    this.boss = null;
   }
 
   hurt(raw: number, from: Enemy | null, why = ''): void {
@@ -750,6 +972,16 @@ export class Floor implements FloorApi {
         this.flashColor = '180,240,255';
         return;
       }
+      if (run.charm) {
+        run.charm = false;
+        run.hp = Math.ceil(this.stats.maxHp * 0.3);
+        p.inv = 2.5;
+        this.env.toast('Оберег Веданы вернул гнома к жизни!', 'good');
+        this.flash = 0.8;
+        this.flashColor = '255,200,230';
+        this.fx.ring(p.x, p.y, 2.5, '#ffc0e0');
+        return;
+      }
       run.hp = 0;
       this.env.died();
     }
@@ -768,7 +1000,7 @@ export class Floor implements FloorApi {
   nearest(x: number, y: number, range: number): Enemy | null {
     let best: Enemy | null = null, bd = range;
     for (const e of this.enemies) {
-      if (e.dead || e.sleep && !e.mini || (e.under && e.def.ai === 'worm')) continue;
+      if (e.dead || e.sleep && !e.mini || e.under || e.ghost < 0.5) continue;
       const d = Math.hypot(e.x - x, e.y - y) - e.r;
       if (d < bd && lineOfSight(this.g, x, y, e.x, e.y)) { bd = d; best = e; }
     }
@@ -776,7 +1008,7 @@ export class Floor implements FloorApi {
   }
 
   enemiesIn(x: number, y: number, r: number): Enemy[] {
-    return this.enemies.filter((e) => !e.dead && !(e.under && e.def.ai === 'worm') && Math.hypot(e.x - x, e.y - y) <= r + e.r);
+    return this.enemies.filter((e) => !e.dead && !e.under && e.ghost >= 0.5 && Math.hypot(e.x - x, e.y - y) <= r + e.r);
   }
 
   shoot(x: number, y: number, target: EnemyRef | null, o: ShootOpts): void {
@@ -785,13 +1017,16 @@ export class Floor implements FloorApi {
     if (target) a = Math.atan2(target.y - y, target.x - x) + this.rng.range(-0.08, 0.08);
     this.projs.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: o.kind === 'wave' ? 0.4 : 0.15, dmg: o.dmg,
       life: o.kind === 'wave' ? 0.6 : 1.2, kind: o.kind ?? 'shard', mine: true, pierce: o.pierce ?? 0, bounce: this.stats.bounce,
-      hit: new Set(), tx: 0, ty: 0 });
+      hit: new Set(), tx: 0, ty: 0, color: null, home: 0, wait: 0, accel: 0 });
   }
 
-  enemyShot(e: Enemy, kind: EProjKind, dmg: number, speed: number, angle?: number): void {
-    const a = angle ?? Math.atan2(this.p.y - e.y, this.p.x - e.x);
-    const proj: Proj = { x: e.x, y: e.y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: kind === 'rock' ? 0.22 : 0.18, dmg,
-      life: 2.5, kind, mine: false, pierce: 0, bounce: 0, hit: new Set(), tx: this.p.x, ty: this.p.y };
+  enemyShot(e: Enemy, kind: EProjKind, dmg: number, speed: number, angle?: number, o: ShotOpts = {}): void {
+    const x = o.x ?? e.x, y = o.y ?? e.y;
+    const a = angle ?? Math.atan2(this.p.y - y, this.p.x - x);
+    const r = o.r ?? (kind === 'rock' ? 0.22 : kind === 'holy' || kind === 'glitch' ? 0.2 : 0.18);
+    const proj: Proj = { x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r, dmg,
+      life: (o.wait ?? 0) + (o.home ? 4 : 3.2), kind, mine: false, pierce: 0, bounce: 0, hit: new Set(), tx: this.p.x, ty: this.p.y,
+      color: o.color ?? null, home: o.home ?? 0, wait: o.wait ?? 0, accel: o.accel ?? 0 };
     if (kind === 'ebomb') {
       // навесом в точку, где стоит гном
       const d = Math.hypot(this.p.x - e.x, this.p.y - e.y);
@@ -906,7 +1141,7 @@ export class Floor implements FloorApi {
   }
 
   torches(): { x: number; y: number; r: number }[] {
-    return this.torchList;
+    return this.torchList.filter((t) => !t.hidden);
   }
 
   text(x: number, y: number, s: string, color: string): void {
@@ -1005,6 +1240,15 @@ export class Floor implements FloorApi {
     this.revealAround(this.p.x, this.p.y, this.stats.light);
     for (const t of this.torchList) this.revealAround(t.x, t.y, t.r);
     const g = this.g;
+    // пленника видно сквозь прутья клетки
+    const c = this.captive;
+    if (c && !c.done) {
+      const i = g.i(c.x, c.y);
+      if (!this.vis[i] && (this.vis[g.i(c.x, c.y - 1)] || this.vis[g.i(c.x, c.y + 1)] || this.vis[g.i(c.x - 1, c.y)] || this.vis[g.i(c.x + 1, c.y)])) {
+        g.seen[i] = 1;
+        this.vis[i] = 1;
+      }
+    }
     for (const pr of this.props) if (pr.kind === 'lamp' && g.seen[g.i(pr.x, pr.y)]) this.revealAround(pr.x + 0.5, pr.y + 0.5, 3.2);
     if (this.stats.oreSight > 0) {
       const r = this.stats.oreSight + 1;
@@ -1058,18 +1302,46 @@ export class Floor implements FloorApi {
         }
         continue;
       }
+      if (!pr.mine) {
+        // висит перед рывком, наводится, разгоняется
+        if (pr.wait > 0) {
+          pr.wait -= dt;
+          if (pr.wait <= 0 && pr.home) {
+            const sp = Math.hypot(pr.vx, pr.vy), a = Math.atan2(p.y - pr.y, p.x - pr.x);
+            pr.vx = Math.cos(a) * sp;
+            pr.vy = Math.sin(a) * sp;
+          }
+          if (Math.hypot(p.x - pr.x, p.y - pr.y) < p.r + pr.r) { pr.life = 0; this.projHit(pr); }
+          continue;
+        }
+        if (pr.home) {
+          const a = Math.atan2(pr.vy, pr.vx), want = Math.atan2(p.y - pr.y, p.x - pr.x);
+          let da = want - a;
+          while (da > Math.PI) da -= Math.PI * 2;
+          while (da < -Math.PI) da += Math.PI * 2;
+          const na = a + Math.max(-pr.home * dt, Math.min(pr.home * dt, da)), sp = Math.hypot(pr.vx, pr.vy);
+          pr.vx = Math.cos(na) * sp;
+          pr.vy = Math.sin(na) * sp;
+        }
+        if (pr.accel) {
+          const k = 1 + pr.accel * dt;
+          pr.vx *= k;
+          pr.vy *= k;
+        }
+      }
       const steps = 2;
       for (let k = 0; k < steps && pr.life > 0; k++) {
         pr.x += (pr.vx * dt) / steps;
         pr.y += (pr.vy * dt) / steps;
         if (g.solid(Math.floor(pr.x), Math.floor(pr.y))) {
           pr.life = 0;
-          this.fx.burst(pr.x, pr.y, pr.kind === 'efire' || pr.kind === 'fire' ? '#ff8a3d' : '#bdb2a6', 4, 2, 1.4);
+          this.fx.burst(pr.x, pr.y, pr.color ?? (pr.kind === 'efire' || pr.kind === 'fire' ? '#ff8a3d' : '#bdb2a6'), 4, 2, 1.4);
+          if (pr.kind === 'spore') this.zone(pr.x - pr.vx * 0.02, pr.y - pr.vy * 0.02, 0.9, 3, 'poison', Math.max(1, Math.round(pr.dmg * 0.4)));
           break;
         }
         if (pr.mine) {
           for (const e of this.enemies) {
-            if (e.dead || pr.hit.has(e) || (e.under && e.def.ai === 'worm')) continue;
+            if (e.dead || pr.hit.has(e) || e.under || e.ghost < 0.5) continue;
             if (Math.hypot(e.x - pr.x, e.y - pr.y) > e.r + pr.r) continue;
             pr.hit.add(e);
             this.damage(e, pr.dmg, 'proj');
@@ -1097,12 +1369,21 @@ export class Floor implements FloorApi {
           }
         } else if (Math.hypot(p.x - pr.x, p.y - pr.y) < p.r + pr.r) {
           pr.life = 0;
-          this.hurt(pr.dmg, null, pr.kind === 'web' ? 'Паутина!' : '');
-          if (pr.kind === 'web') p.slowT = 1.4;
+          this.projHit(pr);
         }
       }
     }
     this.projs = this.projs.filter((pr) => pr.life > 0);
+    if (this.projs.length > 500) this.projs.splice(0, this.projs.length - 500);
+  }
+
+  private projHit(pr: Proj): void {
+    const p = this.p;
+    this.hurt(pr.dmg, null, pr.kind === 'web' ? 'Паутина!' : pr.kind === 'ice' ? 'Холод!' : '');
+    if (pr.kind === 'web') p.slowT = 1.4;
+    else if (pr.kind === 'ice') p.slowT = Math.max(p.slowT, 1);
+    else if (pr.kind === 'spore') this.zone(pr.x, pr.y, 0.9, 3, 'poison', Math.max(1, Math.round(pr.dmg * 0.4)));
+    else if (pr.kind === 'glitch') this.glitch = Math.max(this.glitch, 0.2);
   }
 
   private updateBombs(dt: number): void {
@@ -1131,12 +1412,6 @@ export class Floor implements FloorApi {
       if (Math.random() < 0.3) this.fx.puff(c.x + this.rng.range(-c.r, c.r) * 0.7, c.y + this.rng.range(-c.r, c.r) * 0.7, 'rgba(140,220,90,0.5)');
     }
     this.clouds = this.clouds.filter((c) => c.t > 0);
-    for (const f of this.fires) {
-      f.t -= dt;
-      if (Math.random() < 0.15) this.fx.flame(f.x - 0.5, f.y - 0.5);
-      if (Math.hypot(this.p.x - f.x, this.p.y - f.y) < 0.6) this.hurt(4, null, 'Огонь!');
-    }
-    this.fires = this.fires.filter((f) => f.t > 0);
     for (const e of this.enemies) {
       if (e.burnT > 0) {
         e.burnT -= dt;
@@ -1171,6 +1446,20 @@ export class Floor implements FloorApi {
         if (m.cd <= 0) {
           const e = this.nearest(m.x, m.y, 1.6);
           if (e) { m.cd = 0.8; this.damage(e, 3, 'summon'); this.fx.burst(e.x, e.y, '#c9b8ff', 4, 2, 1.2); }
+        }
+      } else if (m.kind === 'drone') {
+        // дрон Прокопа парит за плечом и стреляет
+        m.a += dt * 1.5;
+        m.x += (p.x - 0.7 + Math.cos(m.a) * 0.3 - m.x) * Math.min(1, dt * 6);
+        m.y += (p.y - 0.9 + Math.sin(m.a * 1.3) * 0.2 - m.y) * Math.min(1, dt * 6);
+        if (m.cd <= 0) {
+          const e = this.nearest(m.x, m.y, 6.5);
+          if (e) {
+            m.cd = 0.55;
+            for (let k = 0; k <= this.stats.projBonus; k++) {
+              this.shoot(m.x, m.y, e, { dmg: (3 + this.stats.swordDmg * 0.25) * this.stats.drone, kind: 'bolt', speed: 12 });
+            }
+          }
         }
       } else {
         const e = this.nearest(m.x, m.y, 5);
@@ -1257,10 +1546,45 @@ export class Floor implements FloorApi {
 
   // ---------------- комнаты, волны, босс ----------------
 
+  /** Темница: стража мертва - клетка открывается, гном касается пленника - спасён. */
+  private updateCaptive(): void {
+    const c = this.captive;
+    if (!c || c.done) return;
+    const g = this.g, p = this.p;
+    if (!c.open) {
+      const guards = c.room ? this.enemies.some((e) => e.room === c.room && !e.dead) : false;
+      if (guards) {
+        // стража просыпается, когда гном рядом
+        if (Math.hypot(p.x - c.x - 0.5, p.y - c.y - 0.5) < 6) for (const e of this.enemies) if (e.room === c.room && e.sleep) e.sleep = false;
+        return;
+      }
+      c.open = true;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const x = c.x + dx, y = c.y + dy;
+        if (g.get(x, y) === B.DOOR) { g.set(x, y, B.FLOOR); this.fx.burst(x + 0.5, y + 0.5, '#9a9aa8', 6, 3, 1.6, 0, 0.4); }
+      }
+      this.terrain();
+      this.env.audio.clang();
+      this.env.toast('Стража повержена, клетка открыта!', 'good');
+      return;
+    }
+    if (Math.hypot(p.x - (c.x + 0.5), p.y - (c.y + 0.5)) > 0.9) return;
+    c.done = true;
+    const npc = npcDef(c.id);
+    this.env.rescue(c.id);
+    this.env.audio.fanfare();
+    this.flash = 0.6;
+    this.flashColor = '255,240,200';
+    this.fx.sparkle(c.x + 0.5, c.y + 0.5, '#ffe9a0', 30);
+    this.fx.ring(c.x + 0.5, c.y + 0.5, 2.5, '#ffe9a0');
+    this.fx.text(c.x + 0.5, c.y - 0.6, `${npc.name} спасён${npc.id === 'healer' ? 'а' : ''}!`, '#ffe9a0', true);
+  }
+
   private updateProps(): void {
+    this.updateCaptive();
     const p = this.p, run = this.env.run;
     for (const pr of this.props) {
-      if (pr.kind === 'lamp' || pr.kind === 'trial') continue;
+      if (pr.kind === 'lamp' || pr.kind === 'trial' || pr.kind === 'captive') continue;
       const d = Math.hypot(p.x - (pr.x + 0.5), p.y - (pr.y + 0.5));
       if (d > 1.4) { pr.away = true; continue; }
       if (d > 0.9 || !pr.away) continue;
@@ -1385,25 +1709,66 @@ export class Floor implements FloorApi {
 
   private updateBossTrigger(): void {
     const a = this.layout.arena;
-    if (!a || this.bossStarted || !this.layout.boss) return;
+    const ids = this.layout.bosses;
+    if (!a || this.bossStarted || !ids.length) return;
     if (this.p.y < a.y0 + 1.5) return;
     this.bossStarted = true;
     // закрыть вход на арену
     for (let y = a.y0 - 3; y < a.y0; y++) for (let x = a.x0; x <= a.x1; x++) if (this.g.open(x, y)) { this.g.b[this.g.i(x, y)] = B.DOOR; }
-    const cx = (a.x0 + a.x1) / 2 + 0.5, cy = (a.y0 + a.y1) / 2 + 2;
+    const cx = (a.x0 + a.x1) / 2 + 0.5, cy = (a.y0 + a.y1) / 2 + 0.5;
+    const god = ids[0].startsWith('bogomiron');
     // жаровни по краю арены: босса должно быть видно
-    for (let k = 0; k < 8; k++) {
-      const an = (k / 8) * Math.PI * 2;
-      const tx = Math.floor(cx + Math.cos(an) * ((a.x1 - a.x0) / 2 - 1.5)), ty = Math.floor((a.y0 + a.y1) / 2 + Math.sin(an) * ((a.y1 - a.y0) / 2 - 1.5));
+    const n = god ? 12 : 8;
+    for (let k = 0; k < n; k++) {
+      const an = (k / n) * Math.PI * 2;
+      const tx = Math.floor(cx + Math.cos(an) * ((a.x1 - a.x0) / 2 - 1.5)), ty = Math.floor(cy + Math.sin(an) * ((a.y1 - a.y0) / 2 - 1.5));
       if (this.g.open(tx, ty)) this.torchList.push({ x: tx + 0.5, y: ty + 0.5, r: 5.5 });
     }
+    // свет над всей ареной: босса и его атаки видно отовсюду
+    this.torchList.push({ x: cx, y: cy, r: Math.min(a.x1 - a.x0, a.y1 - a.y0) / 2 + 1, hidden: true });
     this.revealT = 0;
-    this.boss = this.spawn(this.layout.boss, cx, cy);
-    this.boss.sleep = false;
-    this.boss.spawnT = 1;
+    ids.forEach((id, k) => {
+      const off = ids.length > 1 ? (k ? 3.5 : -3.5) : 0;
+      const b = this.spawn(id, cx + off, god ? cy : cy + 1.5);
+      b.sleep = false;
+      b.spawnT = 1;
+      this.bosses.push(b);
+    });
     this.shake = 0.6;
-    this.env.audio.rumble();
-    this.env.toast(`${this.boss.def.name}! ${this.boss.def.desc ?? ''}`, 'bad');
+    if (god) {
+      const truth = ids[0] === 'bogomiron_true';
+      this.cine = { t: 0, dur: truth ? 6.5 : 3.8, kind: truth ? 'true' : 'bogo' };
+      for (const b of this.bosses) b.spawnT = this.cine.dur;
+      this.env.audio.godAppear(truth);
+      if (truth) this.env.meta.seenTrue = true;
+    } else {
+      this.env.audio.rumble();
+      this.env.audio.roar();
+    }
+    if (god) return;
+    const names = this.bosses.map((b) => b.def.name).join(' и ');
+    this.env.toast(this.bosses.length > 1 ? `${names}! Сразу двое!` : `${names}! ${this.bosses[0].def.desc ?? ''}`, 'bad');
+  }
+
+  private endCine(): void {
+    const c = this.cine;
+    this.cine = null;
+    if (!c) return;
+    this.shake = 1;
+    this.flash = 1;
+    this.flashColor = c.kind === 'true' ? '255,170,220' : '255,245,210';
+    const p = this.p;
+    for (const b of this.bosses) {
+      b.spawnT = 0;
+      this.fx.ring(b.x, b.y, 7, c.kind === 'true' ? '#ff5ab0' : '#fff2b0', 0.8);
+      this.fx.burst(b.x, b.y, c.kind === 'true' ? '#ff9ad0' : '#fff2b0', 40, 8, 3, 0, 1);
+      // волна отбрасывает гнома от бога
+      const d = Math.hypot(p.x - b.x, p.y - b.y) || 1;
+      if (d < 4) moveBody(p, ((p.x - b.x) / d) * (4 - d), ((p.y - b.y) / d) * (4 - d), this.solidFor);
+    }
+    p.inv = 1.2;
+    this.env.audio.roar();
+    this.say(this.bosses[0]?.def.phases?.[0].say ?? '', 'bad');
   }
 
   private checkExit(): void {
@@ -1452,3 +1817,20 @@ export const ENEMY_COLOR: Record<string, string> = {
   spider: '#5a4a5a', spiderling: '#6a5a6a', mother: '#4a3a4a', kobold: '#b07a4a', crab: '#8a7a6a', golem: '#8a8a8a',
   firebeetle: '#ff7a3a', wisp: '#ffb347', goblin: '#6aa04a', baron: '#4a3a3a', salamander: '#ff5a2a',
 };
+
+export const ZONE_PUFF: Record<ZoneKind, string> = {
+  fire: 'rgba(255,120,40,0.5)', poison: 'rgba(140,220,90,0.5)', ice: 'rgba(190,240,255,0.5)', holy: 'rgba(255,240,170,0.5)', glitch: 'rgba(255,90,180,0.5)',
+};
+const ZONE_NAME: Record<ZoneKind, string> = { fire: 'Огонь!', poison: 'Яд!', ice: 'Холод!', holy: 'Свет!', glitch: 'Сбой!' };
+export const STRIKE_COLOR: Record<string, string> = {
+  rock: '#bdb2a6', ice: '#bff4ff', holy: '#fff2b0', glitch: '#ff5ab0', fire: '#ff8a3d', orb: '#9ff4ff', spore: '#9dff7a', root: '#7a5a3a',
+  web: '#eeeef4', bomb: '#ffcf6a',
+};
+
+/** Расстояние от точки до отрезка. */
+export function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const l = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l));
+  return Math.hypot(px - ax - dx * t, py - ay - dy * t);
+}

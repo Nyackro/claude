@@ -16,6 +16,12 @@ export const B = {
   CRYSTAL: 12,
   CRACKED: 13,
   DOOR: 14,
+  CRYSTALROCK: 15,
+  MYCEL: 16,
+  ICE: 17,
+  MAGMA: 18,
+  RUNE: 19,
+  STAR: 20,
 } as const;
 
 export type BlockId = (typeof B)[keyof typeof B];
@@ -46,8 +52,14 @@ export const BLOCKS: Record<number, BlockDef> = {
   [B.CRYSTAL]: d('Светокристалл', 8, 1, true, false),
   [B.CRACKED]: d('Треснувшая стена', 4, 0, true, false),
   [B.DOOR]: d('Запечатанный проход', Infinity, 99, true, false),
+  [B.CRYSTALROCK]: d('Кристаллит', 48, 3),
+  [B.MYCEL]: d('Мицелий', 26, 2),
+  [B.ICE]: d('Вечный лёд', 34, 2),
+  [B.MAGMA]: d('Магмовый камень', 85, 4),
+  [B.RUNE]: d('Кладка Предтеч', 95, 4),
+  [B.STAR]: d('Звёздная порода', 140, 5),
 };
 
-export const ROCKS = [B.DIRT, B.CLAY, B.STONE, B.GRANITE, B.BASALT, B.OBSIDIAN] as const;
+export const ROCKS = [B.DIRT, B.CLAY, B.STONE, B.GRANITE, B.BASALT, B.OBSIDIAN, B.CRYSTALROCK, B.MYCEL, B.ICE, B.MAGMA, B.RUNE, B.STAR] as const;
 
-export const PICK_TIER_NAME = ['деревянная', 'медная', 'железная', 'стальная', 'мифриловая'];
+export const PICK_TIER_NAME = ['деревянная', 'медная', 'железная', 'стальная', 'мифриловая', 'адамантитовая', 'звёздная'];

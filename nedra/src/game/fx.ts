@@ -26,6 +26,14 @@ export interface FloatText {
   num: boolean;
 }
 
+export interface Pillar {
+  x: number;
+  y: number;
+  life: number;
+  max: number;
+  color: string;
+}
+
 export interface Ring {
   x: number;
   y: number;
@@ -39,6 +47,12 @@ export class Fx {
   parts: Particle[] = [];
   texts: FloatText[] = [];
   rings: Ring[] = [];
+  pillars: Pillar[] = [];
+
+  /** Столб света с неба. */
+  pillar(x: number, y: number, life = 0.45, color = '255,242,176'): void {
+    this.pillars.push({ x, y, life, max: life, color });
+  }
 
   burst(x: number, y: number, color: string, n: number, speed = 4, size = 2, g = 0, life = 0.6): void {
     for (let k = 0; k < n; k++) {
@@ -110,5 +124,7 @@ export class Fx {
     if (this.texts.length > 60) this.texts.splice(0, this.texts.length - 60);
     for (const r of this.rings) r.life -= dt;
     this.rings = this.rings.filter((r) => r.life > 0);
+    for (const p of this.pillars) p.life -= dt;
+    this.pillars = this.pillars.filter((p) => p.life > 0);
   }
 }

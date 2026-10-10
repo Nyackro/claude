@@ -23,10 +23,13 @@ export function normalize(raw: unknown): SaveData | null {
     buildings: { ...(d.meta.buildings ?? {}) },
     heroes: Array.isArray(d.meta.heroes) && d.meta.heroes.length ? [...d.meta.heroes] : [...base.heroes],
     bosses: Array.isArray(d.meta.bosses) ? [...d.meta.bosses] : [],
+    rescued: Array.isArray(d.meta.rescued) ? [...d.meta.rescued] : [],
+    npcUp: { ...(d.meta.npcUp ?? {}) },
   };
   if (!meta.heroes.includes(meta.hero)) meta.hero = meta.heroes[0];
   const r = d.run as RunState | null | undefined;
-  const run = r && typeof r === 'object' && typeof r.layer === 'number' && r.bag && r.items ? r : null;
+  const run = r && typeof r === 'object' && typeof r.layer === 'number' && r.bag && r.items
+    ? { ...r, rescued: r.rescued ?? null, potions: r.potions ?? 0, charm: r.charm ?? false } : null;
   return { v: 2, ts: Number(d.ts) || 0, meta, run };
 }
 

@@ -1,8 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { newRun } from '../src/core/run';
-import { BUILDINGS, buildingCost, buildingLevel } from '../src/data/meta';
-import { freshMeta, playFloor, simulateRun } from './bot';
+import { availableLifts, newRun } from '../src/core/run';
+import { freshMeta, botMeta, playFloor, simulateRun } from './bot';
 
 describe('этаж под управлением бота', () => {
   it('первый этаж проходится и не ломается', () => {
@@ -34,22 +33,26 @@ describe('прогрессия между забегами', () => {
     meta.tutorialDone = false;
     const out = process.env.SIM_OUT ?? 'sim.log';
     let time = 0;
+    const firsts = new Map<string, number>();
+    let liftWait = 0;
     for (let r = 1; r <= Number(process.env.SIM_RUNS ?? 30); r++) {
       const hero = meta.heroes.includes('warrior') ? 'warrior' : 'miner';
-      const sim = simulateRun(meta, hero, r * 104729, 3);
+      const lifts = availableLifts(meta);
+      // как игрок: с самого глубокого лифта, а если там не выжить - пару раз с поверхности
+      const start = liftWait > 0 ? 1 : lifts[lifts.length - 1];
+      const t0 = Date.now();
+      const sim = simulateRun(meta, hero, r * 104729 + Number(process.env.SIM_SEED ?? 0), 99, [], start);
       const t = sim.floors.reduce((a, f) => a + f.time, 0) + sim.floors.length * 40;
       time += t;
-      // постройки: самые дешёвые полезные
-      for (let k = 0; k < 20; k++) {
-        const opts = BUILDINGS.filter((b) => buildingLevel(meta, b.id) < b.max).map((b) => ({ b, c: buildingCost(b, buildingLevel(meta, b.id)) }))
-          .sort((a, b) => a.c - b.c);
-        const o = opts[0];
-        if (!o || meta.ingots < o.c) break;
-        meta.ingots -= o.c;
-        meta.buildings[o.b.id] = buildingLevel(meta, o.b.id) + 1;
-      }
+      botMeta(meta);
+      if (start > 1 && !sim.floors.some((f) => f.layer > start || (f.layer === start && f.floor === 2))) liftWait = 2;
+      else if (liftWait > 0) liftWait--;
+      for (const id of meta.rescued) if (!firsts.has(id)) firsts.set(id, time);
+      for (const b of meta.bosses) if (!firsts.has(`b${b}`)) firsts.set(`b${b}`, time);
       const last = sim.floors[sim.floors.length - 1];
-      appendFileSync(out, `run ${r} ${hero}: ${sim.floors.map((f) => `${f.layer}.${f.floor}${f.done ? '' : f.died ? 'x' : 't'}`).join(' ')} | ${last ? `${last.time}s` : ''} ingots +${sim.outcome.ingots} bank ${meta.ingots} bosses [${meta.bosses}] heroes ${meta.heroes.length} bld ${JSON.stringify(meta.buildings)} time ${Math.round(time / 60)}m\n`);
+      const up = Object.values(meta.npcUp).reduce((a, v) => a + v, 0);
+      appendFileSync(out, `run ${r} ${hero} @${start}: ${sim.floors.map((f) => `${f.layer}.${f.floor}${f.done ? '' : f.died ? 'x' : 't'}`).join(' ')} | ${last ? `${last.time}s -${last.hpLost}hp` : ''} pick ${sim.run.pickTier}+${sim.run.pickSharpen} sword ${sim.run.swordTier}+${sim.run.swordSharpen} ingots +${sim.outcome.ingots} bank ${meta.ingots} top ${Math.max(0, ...meta.bosses)} saved ${meta.rescued.length} npcUp ${up} bld ${Object.values(meta.buildings).reduce((a, v) => a + v, 0)} time ${(time / 3600).toFixed(2)}h cpu ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
     }
-  }, 900_000);
+    appendFileSync(out, `firsts: ${[...firsts].map(([k, v]) => `${k}@${(v / 3600).toFixed(1)}h`).join(' ')}\n`);
+  }, 7_200_000);
 });

@@ -49,6 +49,7 @@ export const ICONS = {
   torch: svg('<path fill="#7a4a26" d="M7 7h2v9H7z"/><path fill="#ff8a2a" d="M6 2h4v5H6z"/><path fill="#ffe08a" d="M7 3h2v3H7z"/><path fill="#ff5a1f" d="M7 0h1v2H7z"/>'),
   coal: svg('<path fill="#2b2b2e" d="M3 5h4V3h5v2h2v6h-2v2H5v-2H3z"/><path fill="#8a8a92" d="M5 6h2v1H5zM9 4h2v1H9z"/>'),
   bag: svg('<path fill="#a8763a" d="M4 5h8v9H4z"/><path fill="#c9965a" d="M5 6h3v2H5z"/><path fill="#6a4a22" d="M6 2h4v3H6z"/>'),
+  potion: svg('<path fill="#8a6a4a" d="M6 1h4v2H6z"/><path fill="#cfd8de" d="M6 3h4v3h2v1h1v6h-1v1H4v-1H3V7h1V6h2z"/><path fill="#e8455e" d="M4 8h8v5H4z"/><path fill="#ff9ab0" d="M5 8h2v2H5z"/>'),
   gem: svg('<path fill="#5fd0ff" d="M4 2h8l3 4-7 9-7-9z"/><path fill="#c8f4ff" d="M5 3h3v3H5z"/>'),
 };
 

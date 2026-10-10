@@ -4,6 +4,7 @@ import { HEROES } from '../data/heroes';
 import { ITEMS, itemDef, RARITY_PRICE, RARITY_WEIGHT, type Rarity } from '../data/items';
 import { layerDef } from '../data/layers';
 import { buildingLevel } from '../data/meta';
+import { nextCaptive, npcCost, npcDef, npcLevel, NPCS, type NpcDef } from '../data/npcs';
 import { ORES, oreByKey } from '../data/ores';
 import { PICKS, sharpenCost, SWORDS, type ToolTier } from '../data/tools';
 import { computeIngots, type IngotResult } from './economy';
@@ -13,13 +14,11 @@ import { clampHp, computeStats } from './stats';
 
 export type ToolKind = 'pick' | 'sword';
 
-/** Пласты, к которым можно спуститься на лифте. */
+/** Пласты, к которым можно спуститься на лифте: первый и каждый, чей предшественник побеждён. */
 export function availableLifts(meta: MetaState): number[] {
   const out = [1];
-  for (let L = 2; L <= 10; L++) {
-    if (!meta.bosses.includes(L - 1) || !layerDef(L).ready) break;
-    out.push(L);
-  }
+  const top = meta.bosses.length ? Math.max(...meta.bosses) : 0;
+  for (let L = 2; L <= top + 1; L++) if (meta.bosses.includes(L - 1)) out.push(L);
   return out;
 }
 
@@ -28,19 +27,27 @@ export const priceMult = (layer: number): number => 1 + 0.6 * (layer - 1);
 
 export function newRun(meta: MetaState, hero: string, startLayer: number, seed: number): RunState {
   const rng = new Rng(seed);
-  const kit = startLayer - 1;
+  const lift = startLayer > 1;
+  const kit = lift ? layerDef(startLayer).kit : 0;
+  // в Изнанке лифт щедрее: иначе к рубежу пришлось бы каждый раз идти с поверхности
+  const cyc = layerDef(startLayer).cycle;
+  const kitSharpen = lift ? Math.min(8, Math.floor((startLayer - 1) * 0.8)) + 4 * cyc : 0;
+  const pack = npcLevel(meta, 'pack');
   const run: RunState = {
     seed, hero, startLayer, layer: startLayer, floor: 0, hp: 0,
-    coins: 15 * buildingLevel(meta, 'storage') + 40 * kit,
-    haul: 0, bag: { coal: 3 }, items: {}, pickTier: kit, pickSharpen: 0, swordTier: kit, swordSharpen: 0,
-    bombs: 1, scanners: 0, floorsDone: 0, kills: 0, revived: false, tutorial: !meta.tutorialDone, extraLives: 0, station: null,
+    coins: 15 * buildingLevel(meta, 'storage') + (lift ? Math.round(40 * (startLayer - 1) * Math.max(1, priceMult(startLayer) / 2)) : 0),
+    haul: 0, bag: { coal: 3 + 2 * pack }, items: {},
+    pickTier: kit, pickSharpen: kitSharpen + npcLevel(meta, 'temper'),
+    swordTier: Math.max(kit, npcLevel(meta, 'heirloom')), swordSharpen: kitSharpen + npcLevel(meta, 'edge'),
+    bombs: 1 + pack, scanners: 0, floorsDone: 0, kills: 0, revived: false, tutorial: !meta.tutorialDone, extraLives: 0,
+    rescued: null, potions: npcLevel(meta, 'potion'), charm: npcLevel(meta, 'charm') > 0, station: null,
   };
   if (meta.purchases.starter) run.items.helmet = 1;
   run.hp = computeStats(meta, run).maxHp;
   run.station = makeStation(meta, run, 'start', rng);
-  if (kit > 0) {
-    run.station.reward = randomItems(meta, run, rng, 3, 'common');
-    run.station.rewardLeft = 1;
+  if (lift) {
+    run.station.reward = randomItems(meta, run, rng, 3 + 2 * cyc, cyc ? 'rare' : 'common');
+    run.station.rewardLeft = 1 + cyc;
   }
   return run;
 }
@@ -73,11 +80,10 @@ export function randomItems(meta: MetaState, run: RunState, rng: Rng, n: number,
 export function makeStation(meta: MetaState, run: RunState, kind: StationState['kind'], rng: Rng): StationState {
   const st: StationState = { kind, shop: randomItems(meta, run, rng, 3, null), rerolls: 0, reward: null, rewardLeft: 0, forced: null, healBought: 0 };
   if (kind === 'boss') {
-    st.reward = randomItems(meta, run, rng, 3, 'rare');
+    st.reward = randomItems(meta, run, rng, 3 + npcLevel(meta, 'choice'), 'rare');
     st.rewardLeft = 1;
     const next = layerDef(run.layer + 1);
-    if (run.layer >= 10) st.forced = 'Дальше только Сердце Мира. Этот путь откроется в следующих обновлениях.';
-    else if (!next.ready) st.forced = `Пласт ${next.id} «${next.name}» ещё копают строители. Скоро обновление!`;
+    if (!next.ready) st.forced = `Пласт ${next.id} «${next.name}» ещё копают строители. Скоро обновление!`;
   }
   if (kind !== 'start') alchemy(run, stack(run, 'alchemy'));
   return st;
@@ -123,6 +129,12 @@ export function advance(run: RunState): void {
 
 export const depthOf = (run: RunState): number => (run.layer - 1) * 300 + run.floor * 100;
 
+/** Предел заточки: в Изнанке растёт с каждым кругом. */
+export function sharpenMax(run: RunState): number {
+  const star = stack(run, 'starforge') > 0;
+  return (SHARPEN_MAX + 5 * layerDef(run.layer).cycle) * (star ? 2 : 1);
+}
+
 // ---------------- кузница ----------------
 
 export interface ForgeInfo {
@@ -136,24 +148,33 @@ export interface ForgeInfo {
   sharpenCost: number;
 }
 
-export function forgeInfo(run: RunState, kind: ToolKind): ForgeInfo {
+/** Рецепт с учётом бережливой ковки Гордея. */
+export function recipeOf(meta: MetaState | null, t: ToolTier): Record<string, number> {
+  const k = 1 - 0.15 * (meta ? npcLevel(meta, 'thrift') : 0);
+  const out: Record<string, number> = {};
+  for (const [key, n] of Object.entries(t.recipe)) out[key] = Math.max(1, Math.ceil(n * k));
+  return out;
+}
+
+export function forgeInfo(run: RunState, kind: ToolKind, meta: MetaState | null = null): ForgeInfo {
   const list = kind === 'pick' ? PICKS : SWORDS;
   const tier = kind === 'pick' ? run.pickTier : run.swordTier;
   const next = list[tier + 1] ?? null;
   const have: Record<string, number> = {};
   let can = !!next;
-  if (next) for (const [k, n] of Object.entries(next.recipe)) {
+  const recipe = next ? recipeOf(meta, next) : {};
+  for (const [k, n] of Object.entries(recipe)) {
     have[k] = run.bag[k] ?? 0;
     if (have[k] < n) can = false;
   }
   const lvl = kind === 'pick' ? run.pickSharpen : run.swordSharpen;
   const star = stack(run, 'starforge') > 0;
-  return { kind, cur: list[tier], next, have, can, sharpen: lvl, sharpenMax: SHARPEN_MAX * (star ? 2 : 1),
+  return { kind, cur: list[tier], next: next ? { ...next, recipe } : null, have, can, sharpen: lvl, sharpenMax: sharpenMax(run),
     sharpenCost: Math.round(sharpenCost(kind, star ? Math.floor(lvl / 2) : lvl) * priceMult(run.layer)) };
 }
 
-export function forge(run: RunState, kind: ToolKind): boolean {
-  const f = forgeInfo(run, kind);
+export function forge(run: RunState, kind: ToolKind, meta: MetaState | null = null): boolean {
+  const f = forgeInfo(run, kind, meta);
   if (!f.can || !f.next) return false;
   for (const [k, n] of Object.entries(f.next.recipe)) run.bag[k] -= n;
   if (kind === 'pick') run.pickTier++;
@@ -314,7 +335,7 @@ export function useShrine(meta: MetaState, run: RunState, id: string, rng: Rng):
 }
 
 export function useAnvil(run: RunState, kind: ToolKind): void {
-  const max = SHARPEN_MAX * (stack(run, 'starforge') > 0 ? 2 : 1);
+  const max = sharpenMax(run);
   if (kind === 'pick') run.pickSharpen = Math.min(max, run.pickSharpen + 2);
   else run.swordSharpen = Math.min(max, run.swordSharpen + 2);
 }
@@ -367,10 +388,60 @@ export function onBossBeaten(meta: MetaState, run: RunState): string[] {
   const out: string[] = [];
   if (!meta.bosses.includes(run.layer)) {
     meta.bosses.push(run.layer);
+    if (run.layer === 10) out.push('Богомирон повержен! Под Ядром открылась Изнанка: путь вниз бесконечен.');
+    else if (run.layer % 10 === 0) out.push('Истинный Богомирон пал... но Изнанка уходит ещё глубже.');
     if (layerDef(run.layer + 1).ready) out.push(`Открыт лифт к пласту ${run.layer + 1}.`);
     const fresh = ITEMS.filter((x) => x.pool === run.layer).length;
     if (fresh) out.push(`В шахте появились новые предметы: ${fresh}.`);
   }
   out.push(...checkUnlocks(meta));
   return out;
+}
+
+// ---------------- пленники ----------------
+
+/** Кого держат в плену на текущем этаже (не больше одного спасения за забег). */
+export function captiveHere(meta: MetaState, run: RunState): NpcDef | null {
+  if (run.rescued) return null;
+  const n = nextCaptive(meta);
+  return n && n.layer === run.layer && n.floor === run.floor ? n : null;
+}
+
+export function rescueNpc(meta: MetaState, run: RunState, id: string): NpcDef {
+  if (!meta.rescued.includes(id)) meta.rescued.push(id);
+  run.rescued = id;
+  return npcDef(id);
+}
+
+export interface NpcUpgradeInfo {
+  npc: NpcDef;
+  id: string;
+  name: string;
+  lvl: number;
+  max: number;
+  cost: number;
+  now: string;
+  next: string | null;
+}
+
+export function npcUpgrades(meta: MetaState, npcId: string): NpcUpgradeInfo[] {
+  const npc = npcDef(npcId);
+  return npc.upgrades.map((up) => {
+    const lvl = npcLevel(meta, up.id);
+    return { npc, id: up.id, name: up.name, lvl, max: up.max, cost: npcCost(up, lvl), now: up.desc(lvl), next: lvl < up.max ? up.desc(lvl + 1) : null };
+  });
+}
+
+export function buyNpcUpgrade(meta: MetaState, upId: string): boolean {
+  for (const npc of NPCS) {
+    const up = npc.upgrades.find((x) => x.id === upId);
+    if (!up || !meta.rescued.includes(npc.id)) continue;
+    const lvl = npcLevel(meta, up.id);
+    const cost = npcCost(up, lvl);
+    if (lvl >= up.max || meta.ingots < cost) return false;
+    meta.ingots -= cost;
+    meta.npcUp[up.id] = lvl + 1;
+    return true;
+  }
+  return false;
 }

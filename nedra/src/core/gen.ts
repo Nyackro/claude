@@ -8,7 +8,7 @@ import { B, BLOCKS } from './blocks';
 import { Grid } from './grid';
 import { noise2, Rng } from './rng';
 
-export type RoomKind = 'lair' | 'vault' | 'trial' | 'merchant' | 'shrine' | 'anvil' | 'spring' | 'secret';
+export type RoomKind = 'lair' | 'vault' | 'trial' | 'merchant' | 'shrine' | 'anvil' | 'spring' | 'secret' | 'captive';
 
 export interface Rect { x0: number; y0: number; x1: number; y1: number }
 
@@ -22,7 +22,7 @@ export interface Room extends Rect {
 }
 
 export interface Prop {
-  kind: 'merchant' | 'shrine' | 'anvil' | 'spring' | 'trial' | 'lamp' | 'mushroom';
+  kind: 'merchant' | 'shrine' | 'anvil' | 'spring' | 'trial' | 'lamp' | 'mushroom' | 'captive';
   x: number;
   y: number;
   room: number;
@@ -45,7 +45,8 @@ export interface FloorLayout {
   spawns: Spawn[];
   chambers: Rect[];
   arena: Rect | null;
-  boss: string | null;
+  bosses: string[];
+  captive: { id: string; x: number; y: number; room: number } | null;
   route: [number, number][];
 }
 
@@ -58,12 +59,13 @@ export const ROOM_INFO: Record<RoomKind, { name: string; w: number; h: number; w
   anvil: { name: 'Наковальня', w: 5, h: 4, weight: 12 },
   spring: { name: 'Родник', w: 4, h: 4, weight: 9 },
   secret: { name: 'Тайник', w: 3, h: 3, weight: 0 },
+  captive: { name: 'Темница', w: 7, h: 6, weight: 0 },
 };
 
-const HARD_BY_TIER = [B.STONE, B.GRANITE, B.BASALT, B.OBSIDIAN];
+const HARD_BY_TIER = [B.STONE, B.GRANITE, B.BASALT, B.OBSIDIAN, B.MAGMA, B.STAR, B.STAR];
 
-export function generateFloor(layer: LayerDef, floor: number, seed: number, tutorial = false): FloorLayout {
-  return floor >= 2 ? generateBossFloor(layer, seed) : generateNormal(layer, floor, seed, tutorial);
+export function generateFloor(layer: LayerDef, floor: number, seed: number, tutorial = false, captive: string | null = null): FloorLayout {
+  return floor >= 2 ? generateBossFloor(layer, seed) : generateNormal(layer, floor, seed, tutorial, captive);
 }
 
 function fillRock(g: Grid, rng: Rng, weights: [number, number][], hardenDown: number): void {
@@ -125,7 +127,7 @@ function softPath(g: Grid, rng: Rng, ax: number, ay: number, bx: number, by: num
     cells.push([x, y]);
     const i = g.i(x, y);
     const b = g.b[i];
-    if (b === B.FLOOR) continue;
+    if (b === B.FLOOR || b === B.DOOR || b === B.CHEST || g.room[i]) continue;   // клетку темницы и сундуки не трогаем
     if (b === B.BEDROCK || g.tier(i) > 0) g.set(x, y, soft);
     else if (b === B.STONE && soft !== B.STONE) g.set(x, y, soft);
   }
@@ -134,7 +136,7 @@ function softPath(g: Grid, rng: Rng, ax: number, ay: number, bx: number, by: num
 
 const overlaps = (a: Rect, b: Rect, m: number) => !(a.x1 + m < b.x0 || b.x1 + m < a.x0 || a.y1 + m < b.y0 || b.y1 + m < a.y0);
 
-function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: boolean): FloorLayout {
+function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: boolean, captive: string | null): FloorLayout {
   const rng = new Rng(seed);
   const g = new Grid(FLOOR_W, FLOOR_H);
   fillRock(g, rng, L.rocks[Math.min(floor, L.rocks.length - 1)], 0.8);
@@ -175,7 +177,7 @@ function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: bool
     }
   }
 
-  // боковые комнаты
+  // боковые комнаты; темница с пленником - первой, чтобы точно нашлось место
   const kinds = (Object.keys(ROOM_INFO) as RoomKind[]).filter((k) => ROOM_INFO[k].weight > 0);
   const want = tutorial ? 1 : 2 + (floor >= 1 ? 1 : 0);
   const chosen: RoomKind[] = tutorial ? ['spring'] : [];
@@ -184,12 +186,23 @@ function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: bool
     chosen.push(k);
   }
   if (!tutorial && rng.chance(0.4)) chosen.push('secret');
+  if (captive) chosen.unshift('captive');
+  let cap: FloorLayout['captive'] = null;
   for (const kind of chosen) {
-    const room = placeRoom(g, rng, kind, chambers, taken, rooms.length + 1, L, floor);
+    const room = placeRoom(g, rng, kind, chambers, taken, rooms.length + 1, L, floor, kind === 'captive' ? 400 : 60);
     if (!room) continue;
     rooms.push(room);
     taken.push(room);
-    fillRoom(g, room, props, spawns, L, floor);
+    fillRoom(g, room, props, spawns, L, floor, rng);
+    if (kind === 'captive' && captive) cap = { id: captive, x: room.cx, y: room.cy, room: room.id };
+  }
+  if (captive && !cap) {
+    // запасной вариант: пленник в последней пещере
+    const c = chambers[chambers.length - 1];
+    const x = Math.round((c.x0 + c.x1) / 2), y = Math.round((c.y0 + c.y1) / 2);
+    carveRect(g, { x0: x - 1, y0: y - 1, x1: x + 1, y1: y + 1 });
+    props.push({ kind: 'captive', x, y, room: 0 });
+    cap = { id: captive, x, y, room: 0 };
   }
 
   for (const r of rooms) {
@@ -210,7 +223,7 @@ function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: bool
   const pool = L.enemies;
   chambers.forEach((c, idx) => {
     if (idx === 0 && (tutorial || floor === 0)) return;
-    const n = (tutorial ? 1 : 2) + floor + rng.int(0, 1) + (L.id - 1);
+    const n = (tutorial ? 1 : 2) + floor + rng.int(0, 1) + Math.min(4, L.id - 1);
     for (let k = 0; k < n; k++) {
       const p = randomOpenIn(g, rng, c);
       if (!p) continue;
@@ -220,7 +233,7 @@ function generateNormal(L: LayerDef, floor: number, seed: number, tutorial: bool
 
   decorate(g, rng, L);
   for (let x = start.x - 2; x <= start.x + 2; x++) for (let y = 2; y <= 5; y++) g.seen[g.i(x, y)] = 1;
-  return { grid: g, start, exit, rooms, props, spawns, chambers, arena: null, boss: null, route };
+  return { grid: g, start, exit, rooms, props, spawns, chambers, arena: null, bosses: [], captive: cap, route };
 }
 
 function nearestPoint(pts: { x: number; y: number }[], x: number, y: number) {
@@ -232,9 +245,10 @@ function nearestPoint(pts: { x: number; y: number }[], x: number, y: number) {
   return best;
 }
 
-function placeRoom(g: Grid, rng: Rng, kind: RoomKind, chambers: Rect[], taken: Rect[], id: number, L: LayerDef, floor: number): Room | null {
+function placeRoom(g: Grid, rng: Rng, kind: RoomKind, chambers: Rect[], taken: Rect[], id: number, L: LayerDef, floor: number,
+  attempts = 60): Room | null {
   const { w, h } = ROOM_INFO[kind];
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const c = rng.pick(chambers);
     const ccx = Math.round((c.x0 + c.x1) / 2);
     const left = ccx > g.w / 2 ? rng.chance(0.8) : rng.chance(0.2);
@@ -250,11 +264,11 @@ function placeRoom(g: Grid, rng: Rng, kind: RoomKind, chambers: Rect[], taken: R
       lamp: kind === 'secret' ? null : { x: left ? r.x1 : r.x0, y: doorY }, door: { x: doorX, y: doorY } };
     carveRect(g, r, id);
     // стена комнаты
-    const tier = kind === 'vault' ? Math.min(3, (L.id - 1) + floor) : -1;
+    const tier = kind === 'vault' ? Math.min(6, L.kit + floor) : -1;
     for (let y = r.y0 - 1; y <= r.y1 + 1; y++) for (let x = r.x0 - 1; x <= r.x1 + 1; x++) {
       const inner = x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
       if (inner || !g.inside(x, y) || g.get(x, y) === B.BEDROCK) continue;
-      if (tier >= 0) g.set(x, y, HARD_BY_TIER[tier]);
+      if (tier >= 0) g.set(x, y, tier === 4 && L.id === 9 ? B.RUNE : HARD_BY_TIER[tier]);
       else if (g.get(x, y) === B.FLOOR) g.set(x, y, B.STONE);
     }
     if (kind === 'secret') g.set(room.door.x, room.door.y, B.CRACKED);
@@ -271,7 +285,7 @@ function placeRoom(g: Grid, rng: Rng, kind: RoomKind, chambers: Rect[], taken: R
   return null;
 }
 
-function fillRoom(g: Grid, r: Room, props: Prop[], spawns: Spawn[], L: LayerDef, floor: number): void {
+function fillRoom(g: Grid, r: Room, props: Prop[], spawns: Spawn[], L: LayerDef, floor: number, rng: Rng): void {
   const chest = (x: number, y: number, tier: number) => { g.set(x, y, B.CHEST); g.ore[g.i(x, y)] = tier; };
   if (r.lamp) props.push({ kind: 'lamp', x: r.lamp.x, y: r.lamp.y, room: r.id });
   switch (r.kind) {
@@ -301,6 +315,18 @@ function fillRoom(g: Grid, r: Room, props: Prop[], spawns: Spawn[], L: LayerDef,
       chest(r.cx, r.cy, 1);
       g.ore[g.i(r.cx, r.cy)] = 4;                // тайник: сундук с монетами
       break;
+    case 'captive': {
+      // клетка вокруг пленника и стража
+      props.push({ kind: 'captive', x: r.cx, y: r.cy, room: r.id });
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) g.set(r.cx + dx, r.cy + dy, B.DOOR);
+      const guards = 2 + floor;
+      const spots: [number, number][] = [[r.x0, r.y0], [r.x1, r.y0], [r.x0, r.y1], [r.x1, r.y1], [r.cx, r.y0], [r.cx, r.y1]];
+      for (let k = 0; k < guards; k++) {
+        const [x, y] = spots[k % spots.length];
+        spawns.push({ id: rng.weighted(L.enemies, (q) => q[1])[0], x, y, elite: true, room: r.id });
+      }
+      break;
+    }
   }
 }
 
@@ -336,12 +362,16 @@ function placeVeins(g: Grid, rng: Rng, L: LayerDef, floor: number, chambers: Rec
   }
 }
 
-/** Металл для первой кирки и меча: медь и олово в пласте 1, железо дальше. */
+/** Руда для следующей кирки и меча пласта: медь и олово, железо, мифрил, адамантит, звёздный металл. */
+const NEED_ORE: Record<number, [string, number][]> = {
+  1: [['copper', 14], ['tin', 6]], 2: [['iron', 14]], 3: [['iron', 12], ['coal', 12]], 4: [['mithril', 12]], 5: [['mithril', 12]],
+  6: [['adamantite', 12]], 7: [['adamantite', 12]], 8: [['adamantite', 12]], 9: [['starmetal', 12], ['starshard', 3]], 10: [['starmetal', 12], ['starshard', 3]],
+};
+
 function ensureMetals(g: Grid, rng: Rng, L: LayerDef, chambers: Rect[], tutorial: boolean, reserved: Uint8Array): void {
-  const need = L.id === 1 ? ['copper', 'tin'] : L.id === 2 ? ['iron'] : ['iron', 'coal'];
-  for (const key of need) {
+  for (const [key, want] of NEED_ORE[L.id] ?? []) {
     const ore = oreByKey(key);
-    const target = key === 'tin' ? 6 : tutorial ? 16 : 14;
+    const target = tutorial ? want + 2 : want;
     let have = 0;
     for (let i = 0; i < g.b.length; i++) if (g.b[i] === B.ORE && g.ore[i] === ore.id) have++;
     for (let a = 0; a < 400 && have < target; a++) {
@@ -382,12 +412,12 @@ function placeInChamber(g: Grid, rng: Rng, block: number, chambers: Rect[]): voi
 }
 
 function decorate(g: Grid, rng: Rng, L: LayerDef): void {
+  const [a, b] = L.deco;
   for (let i = 0; i < g.b.length; i++) {
     if (g.b[i] !== B.FLOOR || g.room[i]) continue;
     const r = rng.next();
-    if (r < 0.06) g.deco[i] = 1;
-    else if (r < 0.09) g.deco[i] = L.id === 1 ? 2 : 3;
-    else if (r < 0.1 && L.id === 2) g.deco[i] = 5;
+    if (r < 0.06) g.deco[i] = a;
+    else if (r < 0.09) g.deco[i] = b;
   }
 }
 
@@ -404,14 +434,18 @@ function generateBossFloor(L: LayerDef, seed: number): FloorLayout {
   for (let y = arena.y0; y <= arena.y1; y++) for (let x = arena.x0; x <= arena.x1; x++) {
     if (((x - acx) / rx) ** 2 + ((y - acy) / ry) ** 2 <= 1) g.set(x, y, B.FLOOR);
   }
-  // колонны
-  for (let k = 0; k < 4; k++) {
-    const x = Math.round(acx + (k % 2 ? 1 : -1) * rx * 0.45), y = Math.round(acy + (k < 2 ? -1 : 1) * ry * 0.4);
-    g.set(x, y, B.GRANITE);
-    if (rng.chance(0.5)) g.set(x + 1, y, B.GRANITE);
+  // колонны (у бога арена пустая)
+  const god = L.bosses.some((b) => b.startsWith('bogomiron'));
+  if (!god) {
+    const pillar = L.id >= 4 ? HARD_BY_TIER[Math.min(5, L.kit)] : B.GRANITE;
+    for (let k = 0; k < 4; k++) {
+      const x = Math.round(acx + (k % 2 ? 1 : -1) * rx * 0.45), y = Math.round(acy + (k < 2 ? -1 : 1) * ry * 0.4);
+      g.set(x, y, pillar);
+      if (rng.chance(0.5)) g.set(x + 1, y, pillar);
+    }
+    g.set(Math.round(acx) - 4, Math.round(acy), B.TNT);
+    g.set(Math.round(acx) + 4, Math.round(acy), B.TNT);
   }
-  g.set(Math.round(acx) - 4, Math.round(acy), B.TNT);
-  g.set(Math.round(acx) + 4, Math.round(acy), B.TNT);
   const exit = { x: Math.round(acx), y: g.h - 4 };
   softPath(g, rng, Math.round(acx), Math.round(arena.y1), exit.x, g.h - 8, B.DIRT);
   // комната спуска: коренная порода вокруг, сверху запечатанный проход до победы над боссом
@@ -423,8 +457,8 @@ function generateBossFloor(L: LayerDef, seed: number): FloorLayout {
   }
   for (let x = start.x - 2; x <= start.x + 2; x++) for (let y = 2; y <= 5; y++) g.seen[g.i(x, y)] = 1;
   decorate(g, rng, L);
-  const boss = enemyDef(L.boss).id;
-  return { grid: g, start, exit, rooms: [], props: [], spawns: [], chambers: [arena], arena, boss, route: [] };
+  const bosses = L.bosses.map((b) => enemyDef(b).id);
+  return { grid: g, start, exit, rooms: [], props: [], spawns: [], chambers: [arena], arena, bosses, captive: null, route: [] };
 }
 
 /** Можно ли дойти от старта до спуска, копая только породу уровня tier и ниже. */

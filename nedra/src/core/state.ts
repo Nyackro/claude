@@ -23,6 +23,9 @@ export interface MetaState {
   firstCashOut: boolean;
   tutorialDone: boolean;
   giftClaimed: boolean;
+  rescued: string[];                    // спасённые мастера по порядку
+  npcUp: Record<string, number>;        // уровни их улучшений
+  seenTrue: boolean;                    // видел явление Истинного Богомирона
 }
 
 export interface StationState {
@@ -57,6 +60,9 @@ export interface RunState {
   revived: boolean;
   tutorial: boolean;
   extraLives: number;
+  rescued: string | null;               // кого спасли в этом забеге (больше никто не появится)
+  potions: number;
+  charm: boolean;                       // оберег Веданы ещё не сработал
   station: StationState | null;
 }
 
@@ -74,6 +80,9 @@ export function newMeta(): MetaState {
     firstCashOut: false,
     tutorialDone: false,
     giftClaimed: false,
+    rescued: [],
+    npcUp: {},
+    seenTrue: false,
   };
 }
 

@@ -13,6 +13,8 @@ export const PICKS: ToolTier[] = [
   { tier: 2, name: 'Железная кирка', power: 3.6, recipe: { iron: 12 } },
   { tier: 3, name: 'Стальная кирка', power: 6.2, recipe: { iron: 8, coal: 12 } },
   { tier: 4, name: 'Мифриловая кирка', power: 10, recipe: { mithril: 10 } },
+  { tier: 5, name: 'Адамантитовая кирка', power: 16, recipe: { adamantite: 12 } },
+  { tier: 6, name: 'Звёздная кирка', power: 26, recipe: { starmetal: 10, starshard: 2 } },
 ];
 
 export const SWORDS: ToolTier[] = [
@@ -21,6 +23,8 @@ export const SWORDS: ToolTier[] = [
   { tier: 2, name: 'Железный меч', power: 10, recipe: { iron: 10 } },
   { tier: 3, name: 'Стальной меч', power: 16, recipe: { iron: 8, coal: 10 } },
   { tier: 4, name: 'Мифриловый меч', power: 26, recipe: { mithril: 10 } },
+  { tier: 5, name: 'Адамантитовый меч', power: 42, recipe: { adamantite: 10 } },
+  { tier: 6, name: 'Клинок звезды', power: 68, recipe: { starmetal: 10, starshard: 2 } },
 ];
 
 export const sharpenCost = (kind: 'pick' | 'sword', lvl: number): number =>

@@ -39,6 +39,14 @@ const LIST: Raw[] = [
   o('adamantite', 'Адамантит', 90, 4, 24, 'metal', '#b04ad9', '#e9a6ff', '#52186e', '#c76bff'),
   o('diamond', 'Алмаз', 220, 5, 30, 'gem', '#bff4ff', '#ffffff', '#5fb0c8', '#d6fbff'),
   o('starmetal', 'Звёздный металл', 260, 5, 34, 'metal', '#9fb3ff', '#e2e8ff', '#4a5aa0', '#b8c6ff'),
+  o('glowspore', 'Светоспора', 55, 3, 12, 'gem', '#7dff6a', '#d8ffc8', '#2a7a20', '#9dff7a'),
+  o('cryolite', 'Криолит', 40, 3, 14, 'metal', '#9fe8ff', '#effcff', '#3f8aa8'),
+  o('aquamarine', 'Аквамарин', 85, 3, 14, 'gem', '#4fd8e8', '#c8f8ff', '#16707e', '#7ff0ff'),
+  o('fireopal', 'Огненный опал', 150, 4, 20, 'gem', '#ff7a2a', '#ffd08a', '#8a2a08', '#ff9a4a'),
+  o('orichalcum', 'Орихалк', 120, 4, 26, 'metal', '#f0b040', '#fff0b0', '#8a5a10', '#ffd060'),
+  o('relic', 'Древняя монета', 200, 2, 10, 'relic', '#d8b860', '#fff4c0', '#6a5420', '#ffe08a'),
+  o('starshard', 'Осколок звезды', 420, 5, 36, 'gem', '#c8a8ff', '#ffffff', '#5a3aa8', '#e0d0ff'),
+  o('voidstone', 'Камень Изнанки', 800, 6, 50, 'gem', '#ff3a8a', '#ffd0f0', '#3a0a2a', '#ff5ab0'),
 ];
 
 export const ORES: OreDef[] = LIST.map((x, i) => ({ id: i + 1, ...x }));

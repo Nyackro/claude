@@ -200,7 +200,7 @@ button.card:hover:not(:disabled) { border-color: var(--gold2); }
 details summary { cursor: pointer; padding: 8px; font-weight: 800; }
 .logo { font-size: 40px; text-align: center; color: var(--gold); margin: 6px 0 0; text-shadow: 0 3px 0 #000, 0 0 18px rgba(242,193,78,0.35); letter-spacing: 2px; }
 
-#toasts { position: absolute; left: 0; right: 0; top: calc(64px + var(--safe-t)); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; z-index: 5; }
+#toasts { position: absolute; left: 0; right: 0; top: calc(98px + var(--safe-t)); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; z-index: 5; }
 .toast { padding: 7px 12px; border-radius: 10px; background: rgba(15,10,8,0.9); border: 1px solid var(--line); font-size: 14px; animation: toast 2.4s forwards; max-width: 90%; text-align: center; }
 .toast.good { border-color: var(--gold2); color: #ffe08a; }
 .toast.bad { border-color: #8a2a1f; color: #ffb0a8; }
@@ -215,3 +215,9 @@ details summary { cursor: pointer; padding: 8px; font-weight: 800; }
   .hud-top { padding-left: 16px; padding-right: 16px; }
   .slot { width: 58px; height: 58px; }
 }
+.item-pop.rescued { border-color: #e3c06a; box-shadow: 0 0 18px rgba(255,226,140,0.45); }
+.item-pop.rescued .desc.good { color: var(--green); margin-top: 4px; }
+#hud.cine .hud-actions, #hud.cine .hud-top, #hud.cine .minimap, #hud.cine .hint, #hud.cine .floor-banner { opacity: 0; transition: opacity 0.4s; }
+.card.npc.can { border-color: var(--gold2); box-shadow: 0 0 10px rgba(242,193,78,0.3); }
+.card.endless { border-color: #7a3a8a; background: #22142a; }
+#hud.boss .hud-sub { visibility: hidden; }

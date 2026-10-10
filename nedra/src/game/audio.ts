@@ -198,6 +198,140 @@ export class Audio {
     this.noiseHit(3000, 0.2, 0.08, 'highpass', 0.5);
   }
 
+  /** Удар света: колокольчик с искрами. */
+  holy(): void {
+    this.tone(1320, 0.45, 0.09, 'sine');
+    this.tone(1980, 0.35, 0.05, 'sine', 0.01);
+    this.tone(2640, 0.25, 0.03, 'sine', 0.02);
+    this.noiseHit(6000, 0.2, 0.06, 'highpass', 0.6);
+  }
+
+  /** Сбой реальности: рваные писки. */
+  glitch(): void {
+    for (let k = 0; k < 4; k++) this.tone(200 + Math.random() * 1800, 0.035, 0.07, 'square', k * 0.035);
+    this.noiseHit(2400, 0.12, 0.12, 'bandpass', 8);
+  }
+
+  beam(): void {
+    this.tone(220, 0.5, 0.06, 'sawtooth', 0, 3);
+    this.noiseHit(900, 0.35, 0.08, 'bandpass', 2);
+  }
+
+  /** Смена фазы босса: удар и короткий хор. */
+  phase(): void {
+    this.boom();
+    this.choir([220, 277, 330, 440], 1.6, 0.05, false);
+  }
+
+  /** Явление бога: гул, хор ангелов, у Истинного - крик и удар колокола. */
+  godAppear(truth: boolean): void {
+    if (!this.ok()) return;
+    const dur = truth ? 6.5 : 3.8;
+    const c = this.ctx!, t = c.currentTime;
+    // гул снизу
+    for (const f of [55, 110]) {
+      const o = c.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = f;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + dur * 0.6);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 1.5);
+      o.connect(g).connect(this.sfxGain!);
+      o.start(t);
+      o.stop(t + dur + 1.6);
+    }
+    this.choir(truth ? [220, 277.2, 329.6, 440, 554.4, 659.3] : [220, 261.6, 329.6, 440], dur + 1.2, truth ? 0.09 : 0.07, truth);
+    if (truth) {
+      // крик: высокие голоса взмывают вверх
+      for (let k = 0; k < 3; k++) {
+        const o = c.createOscillator();
+        o.type = 'sawtooth';
+        o.frequency.setValueAtTime(700 + k * 140, t + 1.5);
+        o.frequency.exponentialRampToValueAtTime(1600 + k * 300, t + dur);
+        const f = c.createBiquadFilter();
+        f.type = 'bandpass';
+        f.frequency.value = 2400;
+        f.Q.value = 3;
+        const g = c.createGain();
+        g.gain.setValueAtTime(0.0001, t + 1.5);
+        g.gain.exponentialRampToValueAtTime(0.06, t + dur - 0.3);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.6);
+        const lfo = c.createOscillator();
+        lfo.frequency.value = 7 + k;
+        const lg = c.createGain();
+        lg.gain.value = 18;
+        lfo.connect(lg).connect(o.frequency);
+        o.connect(f).connect(g).connect(this.sfxGain!);
+        o.start(t + 1.5);
+        o.stop(t + dur + 0.7);
+        lfo.start(t + 1.5);
+        lfo.stop(t + dur + 0.7);
+      }
+    }
+    // нарастающий шум и удар в момент явления
+    const src = c.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const hp = c.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.setValueAtTime(400, t);
+    hp.frequency.exponentialRampToValueAtTime(6000, t + dur);
+    const ng = c.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(truth ? 0.35 : 0.2, t + dur - 0.05);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.15);
+    src.connect(hp).connect(ng).connect(this.sfxGain!);
+    src.start(t);
+    src.stop(t + dur + 0.2);
+    setTimeout(() => {
+      this.boom();
+      for (const [f, d] of [[440, 2.5], [1214, 1.8], [2376, 1.2]] as const) this.tone(f, d, 0.12, 'sine');
+    }, dur * 1000);
+  }
+
+  /** Хор: на каждую ноту два расстроенных голоса через фильтры гласной «а» с вибрато. */
+  private choir(notes: number[], dur: number, vol: number, swell: boolean): void {
+    if (!this.ok()) return;
+    const c = this.ctx!, t = c.currentTime;
+    const out = c.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.exponentialRampToValueAtTime(vol, t + (swell ? dur * 0.5 : 0.25));
+    out.gain.setValueAtTime(vol, t + dur - 0.6);
+    out.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.8);
+    out.connect(this.sfxGain!);
+    const f1 = c.createBiquadFilter();
+    f1.type = 'bandpass';
+    f1.frequency.value = 800;
+    f1.Q.value = 2;
+    const f2 = c.createBiquadFilter();
+    f2.type = 'bandpass';
+    f2.frequency.value = 1150;
+    f2.Q.value = 3;
+    f1.connect(out);
+    f2.connect(out);
+    const vib = c.createOscillator();
+    vib.frequency.value = 5.5;
+    vib.start(t);
+    vib.stop(t + dur + 1);
+    for (const n of notes) for (const det of [-6, 7]) {
+      const o = c.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = n;
+      o.detune.value = det;
+      const vg = c.createGain();
+      vg.gain.value = n * 0.004;
+      vib.connect(vg).connect(o.frequency);
+      const g = c.createGain();
+      g.gain.value = 0.5 / notes.length;
+      o.connect(g);
+      g.connect(f1);
+      g.connect(f2);
+      o.start(t);
+      o.stop(t + dur + 1);
+    }
+  }
+
   /** Тихий эмбиент пласта: пара расстроенных осцилляторов и медленный фильтр. */
   playMusic(layer: number): void {
     this.musicLayer = layer;

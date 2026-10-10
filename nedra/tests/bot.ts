@@ -1,12 +1,14 @@
 // Бот для проверки этажей без отрисовки: идёт к спуску по самому быстрому пути (копая), рубит врагов, бьёт босса.
 import { B, BLOCKS } from '../src/core/blocks';
-import { advance, buySupply, chooseReward, completeFloor, finishRun, floorSeed, forge, forgeInfo, newRun, sellable, sellOre, sharpen,
-  supplyBlocked, type RunOutcome } from '../src/core/run';
+import { advance, buySupply, captiveHere, chooseReward, completeFloor, finishRun, floorSeed, forge, forgeInfo, newRun, rescueNpc, sellable, sellOre,
+  sharpen, supplyBlocked, type RunOutcome } from '../src/core/run';
 import { Rng } from '../src/core/rng';
 import { newMeta, type MetaState, type RunState } from '../src/core/state';
 import { computeStats } from '../src/core/stats';
 import type { Audio } from '../src/game/audio';
-import { Floor, type FloorEnv } from '../src/game/floor';
+import { Floor, segDist, type FloorEnv } from '../src/game/floor';
+import { BUILDINGS, buildingCost, buildingLevel } from '../src/data/meta';
+import { buyNpcUpgrade, npcUpgrades } from '../src/core/run';
 
 export const silentAudio = new Proxy({}, { get: () => () => undefined }) as unknown as Audio;
 
@@ -32,6 +34,8 @@ export function makeEnv(meta: MetaState, run: RunState, log: string[] = []): Flo
     died: () => { state.died = true; },
     openProp: (_k, prop) => { prop.used = true; },
     itemFound: () => undefined,
+    captive: captiveHere(meta, run)?.id ?? null,
+    rescue: (id) => { rescueNpc(meta, run, id); },
   };
 }
 
@@ -126,6 +130,70 @@ function lootPath(f: Floor, limit: number): number[] {
   return best < 0 ? [] : pathTo(d, best);
 }
 
+const TAU = Math.PI * 2;
+
+/** Опасность точки на ближайшие horizon секунд: удары с неба, лучи, волны, зоны, снаряды, бомбы, красные круги. */
+export function danger(f: Floor, x: number, y: number, horizon: number): number {
+  const pr = f.p.r;
+  let d = 0;
+  for (const st of f.strikes) {
+    if (st.t > horizon + 0.6) continue;
+    const inside = st.square ? Math.abs(x - st.x) < st.r + pr && Math.abs(y - st.y) < st.r + pr : Math.hypot(x - st.x, y - st.y) < st.r + pr;
+    if (inside) d += 2 + 2 / (0.2 + st.t);
+  }
+  for (const b of f.beams) {
+    if (b.warn > horizon + 0.5) continue;
+    for (const a of b.spin ? [b.a, b.a + b.spin * (horizon + Math.max(0, b.warn))] : [b.a]) {
+      const ex = b.x + Math.cos(a) * b.len, ey = b.y + Math.sin(a) * b.len;
+      if (segDist(x, y, b.x, b.y, ex, ey) < b.w / 2 + pr + 0.3) { d += b.warn > 0 ? 3 : 6; break; }
+    }
+  }
+  for (const w of f.waves) {
+    if (w.hit) continue;
+    const dist = Math.hypot(x - w.x, y - w.y), r1 = w.r + w.speed * horizon;
+    if (dist < w.r - 0.5 || dist > r1 + 0.5) continue;
+    let da = Math.atan2(y - w.y, x - w.x) - w.gapA;
+    while (da > Math.PI) da -= TAU;
+    while (da < -Math.PI) da += TAU;
+    if (Math.abs(da) > w.gapW / 2 - 0.12) d += 4;
+  }
+  for (const z of f.zones) if (Math.hypot(x - z.x, y - z.y) < z.r + pr * 0.3 + 0.25) d += 2;
+  for (const b of f.bombs) if (!b.safe && b.t < horizon + 0.5 && Math.hypot(x - b.x, y - b.y) < b.r + 0.3) d += 4;
+  for (const t of f.telegraphs) {
+    const dd = Math.hypot(x - t.x, y - t.y);
+    if (t.ring ? Math.abs(dd - t.r) < 0.8 : dd < t.r + 0.45) d += 3;
+  }
+  for (const p of f.projs) {
+    if (p.mine || p.kind === 'ebomb') continue;
+    if (Math.abs(p.x - x) > 5 || Math.abs(p.y - y) > 5) continue;
+    for (const t of [0.06, 0.15, 0.3]) {
+      const tt = Math.max(0, t - p.wait);
+      if (Math.hypot(x - p.x - p.vx * tt, y - p.y - p.vy * tt) < p.r + pr + 0.12) { d += 3; break; }
+    }
+  }
+  return d;
+}
+
+/** Куда шагнуть: желаемое направление, но в обход опасности. */
+export function steer(f: Floor, mx: number, my: number): [number, number] {
+  const p = f.p, sp = f.stats.speed * (p.slowT > 0 ? 0.55 : 1), h = 0.22;
+  const want = Math.hypot(mx, my);
+  const ahead = (cx: number, cy: number, k: number) => danger(f, p.x + cx * sp * h * k, p.y + cy * sp * h * k, h * k);
+  if (danger(f, p.x, p.y, h) === 0 && (want === 0 || ahead(mx / want, my / want, 1) + ahead(mx / want, my / want, 2) === 0)) return [mx, my];
+  let best: [number, number] = [mx, my], bestScore = Infinity;
+  const cands: [number, number][] = [[0, 0]];
+  if (want) cands.push([mx / want, my / want]);
+  for (let k = 0; k < 16; k++) cands.push([Math.cos((k / 16) * TAU), Math.sin((k / 16) * TAU)]);
+  for (const [cx, cy] of cands) {
+    if ((cx || cy) && f.g.solid(Math.floor(p.x + cx * 0.55), Math.floor(p.y + cy * 0.55)) && !(want && cx * mx + cy * my > 0.98 * want)) continue;
+    const dng = ahead(cx, cy, 1) + 0.6 * ahead(cx, cy, 2.2);
+    const align = want ? 1 - (cx * mx + cy * my) / want : cx || cy ? 0.2 : 0;
+    const score = dng * 10 + align;
+    if (score < bestScore) { bestScore = score; best = [cx, cy]; }
+  }
+  return best;
+}
+
 /** Прогон одного этажа ботом. */
 export function playFloor(meta: MetaState, run: RunState, maxTime = 600, log: string[] = [], greedy = 5): FloorResult {
   const env = makeEnv(meta, run, log);
@@ -147,6 +215,7 @@ export function playFloor(meta: MetaState, run: RunState, maxTime = 600, log: st
     const boss = f.boss && !f.boss.dead ? f.boss : null;
     const near = f.nearest(f.p.x, f.p.y, 3);
     if (near && f.abilityReady >= 1) actions.push('ability');
+    if (run.potions > 0 && run.hp < f.stats.maxHp * 0.35) actions.push('potion');
     const tele = f.telegraphs.find((t) => Math.hypot(f.p.x - t.x, f.p.y - t.y) < t.r + 0.45);
     if (tele) {
       // уйти из красного круга
@@ -171,9 +240,13 @@ export function playFloor(meta: MetaState, run: RunState, maxTime = 600, log: st
       const cell = g.i(Math.floor(f.p.x), Math.floor(f.p.y));
       if (replan <= 0 || !path.length) {
         replan = 0.5;
-        const a = f.layout.arena;
+        const a = f.layout.arena, c = f.captive;
         if (a && !f.bossStarted) path = plan(f, Math.floor((a.x0 + a.x1) / 2), a.y0 + 3);
-        else {
+        else if (c && !c.done) {
+          // пленник: к клетке, стража проснётся и полезет сама
+          path = c.open ? plan(f, c.x, c.y) : plan(f, c.x, c.y + 2);
+          if (!path.length) path = plan(f, c.x, c.y - 2);
+        } else {
           path = greedy ? lootPath(f, greedy) : [];
           if (!path.length) {
             const ex = f.layout.exit;
@@ -189,6 +262,7 @@ export function playFloor(meta: MetaState, run: RunState, maxTime = 600, log: st
         mx = dx / d; my = dy / d;
       }
     }
+    if (!process.env.NO_STEER) [mx, my] = steer(f, mx, my);
     f.update(dt, { mx, my }, actions);
     if (run.hp < prevHp) hpLost += prevHp - run.hp;
     prevHp = run.hp;
@@ -215,7 +289,7 @@ export function botStation(meta: MetaState, run: RunState): void {
   const st = run.station!;
   if (st.reward?.length) chooseReward(meta, run, st.reward[0]);
   for (const s of sellable(run)) sellOre(run, s.key);
-  if (run.swordTier <= run.pickTier) { forge(run, 'sword'); forge(run, 'pick'); } else { forge(run, 'pick'); forge(run, 'sword'); }
+  if (run.swordTier <= run.pickTier) { forge(run, 'sword', meta); forge(run, 'pick', meta); } else { forge(run, 'pick', meta); forge(run, 'sword', meta); }
   const s = computeStats(meta, run);
   while (run.hp < s.maxHp * 0.6 && !supplyBlocked(meta, run, 'heal')) buySupply(meta, run, 'heal');
   for (let k = 0; k < 20; k++) {
@@ -232,8 +306,8 @@ export interface RunSim {
 }
 
 /** Целый забег ботом: до смерти или до конца готовых пластов. */
-export function simulateRun(meta: MetaState, hero: string, seed: number, maxLayer = 3, log: string[] = []): RunSim {
-  const run = newRun(meta, hero, 1, seed);
+export function simulateRun(meta: MetaState, hero: string, seed: number, maxLayer = 3, log: string[] = [], startLayer = 1): RunSim {
+  const run = newRun(meta, hero, startLayer, seed);
   const rng = new Rng(seed ^ 0x5bd1e995);
   const floors: FloorResult[] = [];
   for (;;) {
@@ -255,3 +329,21 @@ export const freshMeta = (): MetaState => {
   m.tutorialDone = true;
   return m;
 };
+
+/** Посёлок: покупать самые дешёвые улучшения (постройки и мастера), пока хватает слитков. */
+export function botMeta(meta: MetaState): void {
+  for (let k = 0; k < 60; k++) {
+    const opts: { c: number; buy: () => void }[] = [];
+    for (const b of BUILDINGS) {
+      const lvl = buildingLevel(meta, b.id);
+      if (lvl < b.max) opts.push({ c: buildingCost(b, lvl), buy: () => { meta.ingots -= buildingCost(b, lvl); meta.buildings[b.id] = lvl + 1; } });
+    }
+    for (const id of meta.rescued) {
+      for (const u of npcUpgrades(meta, id)) if (u.next) opts.push({ c: u.cost, buy: () => { buyNpcUpgrade(meta, u.id); } });
+    }
+    opts.sort((a, b) => a.c - b.c);
+    const o = opts[0];
+    if (!o || meta.ingots < o.c) break;
+    o.buy();
+  }
+}

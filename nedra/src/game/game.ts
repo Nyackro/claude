@@ -1,6 +1,6 @@
 // Контроллер игры: сохранения, площадка, реклама, переходы между посёлком, привалом и этажом.
 import { AD_COOLDOWN, NEWBIE_GIFT } from '../config';
-import { advance, completeFloor, finishRun, floorSeed, newRun, type RunOutcome } from '../core/run';
+import { advance, captiveHere, completeFloor, finishRun, floorSeed, newRun, rescueNpc, type RunOutcome } from '../core/run';
 import { Rng } from '../core/rng';
 import { loadLocal, normalize, pickNewest, saveLocal, type SaveData } from '../core/save';
 import { newMeta, type MetaState, type RunState } from '../core/state';
@@ -100,6 +100,10 @@ export class Game {
 
   heroSprite(hero: HeroDef): HeroSprites {
     return heroSprites(this.atlas, hero);
+  }
+
+  npcSprite(id: string): HTMLCanvasElement | null {
+    return this.atlas.npcs.get(id)?.portrait ?? null;
   }
 
   rng(): Rng {
@@ -248,6 +252,8 @@ export class Game {
       died: () => this.onDeath(),
       openProp: (kind, prop) => this.openProp(kind, prop),
       itemFound: (id) => this.hud.itemCard(id),
+      captive: captiveHere(this.meta, run)?.id ?? null,
+      rescue: (id) => this.onRescue(id),
     };
     this.floor = new Floor(env, floorSeed(run));
     this.renderer.resetCamera();
@@ -257,6 +263,12 @@ export class Game {
     this.platform.gameplayStart();
     this.audio.playMusic(run.layer);
     this.saveNow();
+  }
+
+  private onRescue(id: string): void {
+    const npc = rescueNpc(this.meta, this.run!, id);
+    this.saveNow(true);
+    this.hud.rescued(npc);
   }
 
   private openProp(kind: 'merchant' | 'shrine' | 'anvil', prop: PropState): void {

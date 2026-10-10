@@ -1,4 +1,4 @@
-// Управление: клавиатура (WASD/стрелки, пробел - способность, F - факел, Q - бомба) и плавающий джойстик на касании.
+// Управление: клавиатура (WASD/стрелки, пробел - способность, F - факел, Q - бомба, H - зелье) и плавающий джойстик на касании.
 
 const KEYS: Record<string, [number, number]> = {
   ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0],
@@ -10,6 +10,7 @@ const ACTION_KEYS: Record<string, string> = {
   KeyF: 'torch', KeyT: 'torch', KeyK: 'torch',
   KeyQ: 'bomb', KeyB: 'bomb', KeyL: 'bomb',
   KeyR: 'scan',
+  KeyH: 'potion', KeyG: 'potion', Digit1: 'potion',
   Escape: 'pause', KeyP: 'pause',
 };
 

@@ -5,6 +5,7 @@ import { enemyDef } from '../data/enemies';
 import { heroDef } from '../data/heroes';
 import { itemDef, RARITY_NAME } from '../data/items';
 import { layerDef } from '../data/layers';
+import type { NpcDef } from '../data/npcs';
 import { oreById } from '../data/ores';
 import { PICKS, SWORDS } from '../data/tools';
 import type { Floor } from '../game/floor';
@@ -41,6 +42,8 @@ export class Hud {
   private bombN: HTMLElement;
   private scanBtn: HTMLElement;
   private scanN: HTMLElement;
+  private potionBtn: HTMLElement;
+  private potionN: HTMLElement;
   private hint: HTMLElement;
   private banner: HTMLElement;
   private card: HTMLElement;
@@ -76,6 +79,8 @@ export class Hud {
     this.bombN = h('b');
     this.scanN = h('b');
     this.scanBtn = h('button', { class: 'act small hidden', 'aria-label': 'Сканер', onpointerdown: act('scan') }, icon('scan'), this.scanN);
+    this.potionN = h('b');
+    this.potionBtn = h('button', { class: 'act small hidden', 'aria-label': 'Зелье', onpointerdown: act('potion') }, icon('potion'), this.potionN);
     this.hint = h('div', { class: 'hint hidden' });
     this.banner = h('div', { class: 'floor-banner hidden' });
     this.card = h('div', { class: 'item-pop hidden' });
@@ -89,6 +94,7 @@ export class Hud {
       this.mini,
       this.boss,
       h('div', { class: 'hud-actions' },
+        this.potionBtn,
         this.scanBtn,
         h('button', { class: 'act', 'aria-label': 'Бомба', onpointerdown: act('bomb') }, icon('bomb'), this.bombN),
         h('button', { class: 'act', 'aria-label': 'Факел', onpointerdown: act('torch') }, icon('torch'), this.torchN),
@@ -127,7 +133,7 @@ export class Hud {
       return h('span', { class: `rock-chip ${ok ? '' : 'hard'}` }, d.name, ok ? '' : `: нужна ${PICK_TIER_NAME[d.tier]} кирка`);
     });
     this.banner.replaceChildren(
-      h('div', { class: 'fb-title' }, boss ? `Разлом: ${enemyDef(L.boss).name}` : `Пласт ${L.id} · этаж ${run.floor + 1} из 2`),
+      h('div', { class: 'fb-title' }, boss ? `Разлом: ${L.bosses.map((b) => enemyDef(b).name).join(' и ')}` : `Пласт ${L.id} · этаж ${run.floor + 1} из 2`),
       h('div', { class: 'fb-sub' }, `${L.name}, ${L.depth}`),
       h('div', { class: 'fb-rocks' }, ...chips));
     this.banner.classList.remove('hidden');
@@ -141,6 +147,17 @@ export class Hud {
     this.cardT = 4;
   }
 
+  /** Пленник спасён: кто он и что умеет. */
+  rescued(npc: NpcDef): void {
+    this.card.className = 'item-pop rescued';
+    this.card.replaceChildren(
+      h('div', { class: 'rar' }, 'Спасён пленник'),
+      h('div', { class: 'name' }, `${npc.name}, ${npc.title}`),
+      h('div', { class: 'desc' }, `«${npc.greet}»`),
+      h('div', { class: 'desc good' }, `Ждёт в посёлке: ${npc.hall}`));
+    this.cardT = 7;
+  }
+
   update(f: Floor, run: RunState, dt: number): void {
     const s = f.stats;
     const hp = Math.max(0, Math.ceil(run.hp));
@@ -148,7 +165,7 @@ export class Hud {
     const where = f.layout.arena ? `Пласт ${run.layer} · Разлом` : `Пласт ${run.layer} · этаж ${run.floor + 1}/2`;
     const tools = `${PICKS[run.pickTier].name}${run.pickSharpen ? ` +${run.pickSharpen}` : ''} · ${SWORDS[run.swordTier].name}${run.swordSharpen ? ` +${run.swordSharpen}` : ''}`;
     const coal = run.bag.coal ?? 0;
-    const sig = `${hp}|${s.maxHp}|${Math.floor(run.coins)}|${coal}|${run.bombs}|${run.scanners}|${where}|${tools}`;
+    const sig = `${hp}|${s.maxHp}|${Math.floor(run.coins)}|${coal}|${run.bombs}|${run.scanners}|${run.potions}|${where}|${tools}`;
     if (sig !== this.sig) {
       this.sig = sig;
       this.hpFill.style.width = `${Math.min(100, (hp / s.maxHp) * 100)}%`;
@@ -161,6 +178,8 @@ export class Hud {
       this.bombN.textContent = String(run.bombs);
       this.scanN.textContent = String(run.scanners);
       this.scanBtn.classList.toggle('hidden', run.scanners <= 0);
+      this.potionN.textContent = String(run.potions);
+      this.potionBtn.classList.toggle('hidden', run.potions <= 0);
       this.where.textContent = where;
       this.tools.textContent = tools;
       (this.ability.querySelector('.act-name') as HTMLElement).textContent = hero.ability.name;
@@ -168,12 +187,19 @@ export class Hud {
     const ready = Math.max(0, Math.min(1, f.abilityReady));
     this.abilityRing.style.background = ready >= 1 ? 'transparent' : `conic-gradient(rgba(0,0,0,0.65) ${(1 - ready) * 360}deg, transparent 0)`;
     this.ability.classList.toggle('ready', ready >= 1);
-    // босс или мини-босс рядом
-    const b = f.boss && !f.boss.dead ? f.boss : f.enemies.find((e) => e.mini && !e.sleep && !e.dead && Math.hypot(e.x - f.p.x, e.y - f.p.y) < 9);
-    this.boss.classList.toggle('hidden', !b);
+    // босс (или двое) либо мини-босс рядом
+    this.root.classList.toggle('cine', !!f.cine);
+    const alive = f.bosses.filter((e) => !e.dead);
+    const b = alive[0] ?? f.enemies.find((e) => e.mini && !e.sleep && !e.dead && Math.hypot(e.x - f.p.x, e.y - f.p.y) < 9);
+    this.boss.classList.toggle('hidden', !b || !!f.cine);
+    this.root.classList.toggle('boss', !!b && !f.cine);
     if (b) {
-      this.bossName.textContent = b.def.name + (b.enraged ? ' (ярость)' : '');
-      this.bossFill.style.width = `${Math.max(0, (b.hp / b.max) * 100)}%`;
+      const list = alive.length ? alive : [b];
+      const ph = b.def.phases && b.def.phases.length > 1 ? ` · фаза ${b.phase + 1}/${b.def.phases.length}` : '';
+      this.bossName.textContent = list.map((e) => e.def.name).join(' и ') + (b.enraged && !ph ? ' (ярость)' : '') + ph;
+      const all = alive.length ? f.bosses : list;
+      const hpSum = all.reduce((a, e) => a + (e.dead ? 0 : Math.max(0, e.hp)), 0), maxSum = all.reduce((a, e) => a + e.max, 0);
+      this.bossFill.style.width = `${(hpSum / Math.max(1, maxSum)) * 100}%`;
     }
     this.miniT -= dt;
     if (this.miniT <= 0) {
@@ -232,6 +258,11 @@ export class Hud {
       if (!col) continue;
       c.fillStyle = col;
       c.fillRect(p.x * MINI_PX - 1, (p.y - y0) * MINI_PX - 1, 4, 4);
+    }
+    const cap = f.captive;
+    if (cap && !cap.done && g.seen[g.i(cap.x, cap.y)] && cap.y >= y0 && cap.y < y0 + rows) {
+      c.fillStyle = Math.floor(performance.now() / 250) % 2 ? '#fff2b0' : '#c89a2a';
+      c.fillRect(cap.x * MINI_PX - 1, (cap.y - y0) * MINI_PX - 1, 4, 4);
     }
     const ex = f.layout.exit;
     if (g.seen[g.i(ex.x, ex.y)] && ex.y >= y0 && ex.y < y0 + rows) {

@@ -2,6 +2,8 @@
 import { B } from '../core/blocks';
 import { hash2 } from '../core/rng';
 import type { HeroDef } from '../data/heroes';
+import { NPCS } from '../data/npcs';
+import { BOGO_SHEET, BOGO_TRUE_SHEET } from './bogosprite';
 import { ORES, type OreDef } from '../data/ores';
 
 export const T = 16;
@@ -114,7 +116,7 @@ const rnd = (a: number, b: number, s: number) => hash2(a, b, s);
 
 // ---------------- породы ----------------
 
-type Pattern = 'dirt' | 'clay' | 'cobble' | 'speckle' | 'hex' | 'glass' | 'bedrock' | 'cracked';
+type Pattern = 'dirt' | 'clay' | 'cobble' | 'speckle' | 'hex' | 'glass' | 'bedrock' | 'cracked' | 'crystal' | 'mycel' | 'ice' | 'magma' | 'rune' | 'star';
 
 export const ROCK_STYLE: Record<number, { base: string; pattern: Pattern }> = {
   [B.DIRT]: { base: '#7a5236', pattern: 'dirt' },
@@ -125,6 +127,17 @@ export const ROCK_STYLE: Record<number, { base: string; pattern: Pattern }> = {
   [B.OBSIDIAN]: { base: '#33263f', pattern: 'glass' },
   [B.BEDROCK]: { base: '#2b2523', pattern: 'bedrock' },
   [B.CRACKED]: { base: '#8a8a88', pattern: 'cracked' },
+  [B.CRYSTALROCK]: { base: '#4a7aa8', pattern: 'crystal' },
+  [B.MYCEL]: { base: '#6a4a7a', pattern: 'mycel' },
+  [B.ICE]: { base: '#9ad0ec', pattern: 'ice' },
+  [B.MAGMA]: { base: '#3a2420', pattern: 'magma' },
+  [B.RUNE]: { base: '#8a7444', pattern: 'rune' },
+  [B.STAR]: { base: '#2a1e48', pattern: 'star' },
+};
+
+/** Породы, которые светятся сами. */
+export const ROCK_GLOW: Record<number, [number, string]> = {
+  [B.MAGMA]: [1.1, '255,110,40'], [B.CRYSTALROCK]: [0.8, '120,200,255'], [B.STAR]: [0.7, '190,160,255'], [B.RUNE]: [0.5, '255,210,110'],
 };
 
 /** Ячейки Вороного: ближайшая и вторая точки. */
@@ -194,8 +207,66 @@ function rockTop(base: RGB, pattern: Pattern, s: number): Pix {
         c = shade(base, 0.8 + blob * 0.4 + (n - 0.5) * 0.2);
         if (n > 0.97) c = [110, 40, 30];
         break;
+      case 'crystal': {
+        // грани кристаллов: диагональные полосы светлых и тёмных граней
+        const facet = Math.floor((x + y * 0.6 + rnd(Math.floor(y / 5), 3, s) * 6) / 4);
+        const lit = rnd(facet, Math.floor(y / 5), s);
+        c = shade(base, 0.75 + lit * 0.6 + (n - 0.5) * 0.06);
+        if ((x + y) % 7 === 0 && lit > 0.6) c = [200, 240, 255];
+        break;
+      }
+      case 'mycel': {
+        // волокна грибницы и светящиеся точки
+        const fib = Math.sin(x * 0.9 + Math.sin(y * 0.7 + s) * 2) * Math.cos(y * 0.5 + x * 0.2);
+        c = shade(base, 0.85 + fib * 0.18 + (n - 0.5) * 0.08);
+        if (n > 0.96) c = [190, 255, 150];
+        else if (n < 0.06) c = [200, 160, 210];
+        break;
+      }
+      case 'ice': {
+        // прозрачная глыба: светлые блики и трещинки
+        c = mix(shade(base, 0.9 + blob * 0.15), [235, 250, 255], Math.max(0, 0.35 - (x + y) / 40));
+        if ((x * 3 + y * 5 + Math.floor(rnd(0, 1, s) * 9)) % 17 === 0) c = [255, 255, 255];
+        if (n < 0.05) c = shade(base, 0.7);
+        break;
+      }
+      case 'magma': {
+        // тёмный камень с раскалёнными трещинами
+        const [d1, d2] = voronoi(x + 0.5, y + 0.5, pts);
+        c = shade(base, 0.85 + blob * 0.25 + (n - 0.5) * 0.1);
+        if (d2 - d1 < 1.1) c = d2 - d1 < 0.5 ? [255, 210, 90] : [255, 110, 30];
+        break;
+      }
+      case 'rune': {
+        // кладка из блоков, на части - золотые знаки
+        const bx = Math.floor((x + (Math.floor(y / 4) % 2 ? 4 : 0)) / 8), by = Math.floor(y / 4);
+        const edge = y % 4 === 0 || (x + (by % 2 ? 4 : 0)) % 8 === 0;
+        c = edge ? shade(base, 0.55) : shade(base, 0.88 + rnd(bx, by, s) * 0.2 + (n - 0.5) * 0.06);
+        break;
+      }
+      case 'star':
+        c = shade(base, 0.75 + blob * 0.5 + (n - 0.5) * 0.1);
+        if (n > 0.975) c = [255, 255, 255];
+        else if (n > 0.95) c = [200, 180, 255];
+        break;
     }
     p.set(x, y, c);
+  }
+  if (pattern === 'rune') {
+    // знак Предтеч
+    const gx = 4 + Math.floor(rnd(1, 9, s) * 6), gy = 5 + Math.floor(rnd(2, 9, s) * 4);
+    const gold: RGB = [255, 214, 110];
+    p.line(gx, gy, gx + 3, gy, gold);
+    p.line(gx + 1, gy - 1, gx + 1, gy + 2, gold);
+    p.set(gx + 3, gy + 1, gold);
+  }
+  if (pattern === 'crystal') {
+    // торчащий кристалл
+    const cx = 3 + Math.floor(rnd(4, 4, s) * 10);
+    for (let k = 0; k < 5; k++) {
+      p.set(cx, 11 - k, [220, 245, 255]);
+      p.set(cx + 1, 11 - k, [120, 180, 230]);
+    }
   }
   if (pattern === 'dirt') {
     for (let k = 0; k < 3; k++) {
@@ -236,7 +307,13 @@ function rockFace(base: RGB, pattern: Pattern, s: number): Pix {
     if (pattern === 'hex' && x % 6 === 1) k += 0.08;
     if (pattern === 'speckle' && n > 0.85) k = 0.35;
     if (pattern === 'glass' && (x + y * 2) % 9 === 0) k = 1.1;
-    p.set(x, y, shade(base, Math.max(0.25, k)));
+    if (pattern === 'crystal' && (x + y) % 5 === 0) k += 0.25;
+    if (pattern === 'ice') k += 0.2;
+    if (pattern === 'rune' && (y === 2 || x % 8 === 0)) k -= 0.15;
+    let c = shade(base, Math.max(0.25, k));
+    if (pattern === 'magma' && (x * 7 + y * 3) % 11 === 0) c = [255, 120, 40];
+    if (pattern === 'star' && n > 0.93) c = [220, 200, 255];
+    p.set(x, y, c);
   }
   if (pattern === 'dirt') for (let k = 0; k < 2; k++) {
     const x = 2 + Math.floor(rnd(k, 50, s) * 12);
@@ -260,6 +337,14 @@ function oreOverlay(o: OreDef, s: number): Pix {
         p.set(cx + x, cy + y, col);
       }
       p.set(cx - 1, cy - 1, [255, 255, 255]);
+    }
+    return p.outline(shade(dk, 0.5));
+  }
+  if (o.kind === 'relic') {
+    for (let k = 0; k < 3; k++) {
+      const cx = 4 + rnd(k, 1, s) * 8, cy = 4 + rnd(k, 2, s) * 8;
+      p.ell(cx, cy, 2.3, 2, (nx, ny) => (nx * nx + ny * ny > 0.55 ? dk : nx + ny < -0.3 ? lt : c));
+      p.set(cx, cy, dk);
     }
     return p.outline(shade(dk, 0.5));
   }
@@ -412,6 +497,40 @@ function deco(kind: number, base: RGB): Pix {
       p.set(k, k, [220, 220, 230], 130);
     }
     p.line(0, 5, 5, 0, [220, 220, 230]);
+  } else if (kind === 6) {
+    for (const [x, y, h] of [[4, 11, 4], [6, 12, 6], [11, 10, 3]] as const) {
+      for (let k = 0; k < h; k++) { p.set(x, y - k, [190, 240, 255]); p.set(x + 1, y - k, [100, 170, 220]); }
+    }
+  } else if (kind === 7) {
+    for (let k = 0; k < 3; k++) {
+      const x = 3 + rnd(k, 5, 7) * 10, y = 4 + rnd(k, 6, 7) * 8;
+      p.rect(x, y + 1, 1, 2, [220, 200, 230]);
+      p.ell(x + 0.5, y, 1.6, 1, () => [190, 90, 220]);
+      p.set(x, y - 1, [210, 255, 170]);
+    }
+  } else if (kind === 8) {
+    // наледь: бледная лужица неровного края и пара бликов
+    p.ell(7, 9, 5, 2.6, (nx, ny) => (nx + ny < -0.5 ? [228, 246, 255] : [176, 214, 236]));
+    p.ell(11, 7.5, 2.4, 1.6, () => [176, 214, 236]);
+    for (let x = 3; x <= 12; x++) if (p.alpha(x, 7) && rnd(x, 7, 41) < 0.5) p.set(x, 7, [150, 196, 224]);
+    p.line(5, 8, 7, 8, [255, 255, 255]);
+    p.set(11, 7, [255, 255, 255]);
+  } else if (kind === 9) {
+    p.line(2, 4, 7, 8, [255, 120, 40]);
+    p.line(7, 8, 9, 13, [255, 90, 30]);
+    p.set(12, 5, [255, 200, 90]);
+    p.set(4, 12, [255, 160, 60]);
+  } else if (kind === 10) {
+    // плита Предтеч с рунным кругом
+    const gold: RGB = [214, 176, 92];
+    p.rect(2, 2, 12, 12, shade(base, 1.12));
+    p.rect(3, 3, 10, 10, shade(base, 0.9));
+    for (let k = 0; k < 28; k++) {
+      const a = (k / 28) * Math.PI * 2;
+      p.set(Math.round(7.5 + Math.cos(a) * 3.4), Math.round(7.5 + Math.sin(a) * 3.4), gold, 150);
+    }
+    p.rect(7, 7, 2, 2, gold);
+    for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) p.set(Math.round(7.5 + dx * 5.4), Math.round(7.5 + dy * 5.4), gold, 210);
   }
   return p;
 }
@@ -593,7 +712,7 @@ export function buildHero(look: HeroDef['look']): HeroSprites {
 
 // ---------------- инструменты ----------------
 
-export const TIER_METAL = ['#a0703a', '#d07a3a', '#b8c0c6', '#dfe7ec', '#8fd6ff'];
+export const TIER_METAL = ['#a0703a', '#d07a3a', '#b8c0c6', '#dfe7ec', '#8fd6ff', '#c76bff', '#e2e8ff'];
 
 function pickSprite(tier: number): Pix {
   const p = new Pix();
@@ -842,6 +961,339 @@ const PAINT: Record<string, { size: number; paint: Painter }> = {
   } },
 };
 
+// ---------------- художники врагов пластов 4-10 ----------------
+
+const rgb = (c: string): RGB => hex(c);
+
+/** Каменный страж и прочие големы. */
+function golemkin(body: string, accent: string, eye: string, sz = 16): Painter {
+  return (p, f) => {
+    const c = rgb(body), a = rgb(accent), e = rgb(eye), k = sz / 16;
+    p.rect(Math.round(5 * k), Math.round(12 * k), Math.round(2 * k), Math.round(3 * k), shade(c, 0.7));
+    p.rect(Math.round(9 * k), Math.round(12 * k), Math.round(2 * k), Math.round(3 * k), shade(c, 0.7));
+    p.blob(3.5 * k, (9 + f * 0.5) * k, 2 * k, 3 * k, shade(c, 0.85), 0.4);
+    p.blob(12.5 * k, (9 - f * 0.5) * k, 2 * k, 3 * k, shade(c, 0.85), 0.4);
+    p.blob(8 * k, 8.5 * k, 4.6 * k, 4.6 * k, c, 0.45);
+    p.blob(8 * k, 3.6 * k, 2.6 * k, 2.2 * k, shade(c, 1.08), 0.4);
+    p.line(5 * k, 7 * k, 7 * k, 11 * k, a);
+    p.line(11 * k, 6 * k, 10 * k, 10 * k, a);
+    p.set(7 * k, 3.4 * k, e);
+    p.set(9 * k, 3.4 * k, e);
+    if (k >= 2) {
+      p.rect(Math.round(7 * k), Math.round(3.2 * k), 2, 2, e);
+      p.rect(Math.round(9 * k), Math.round(3.2 * k), 2, 2, e);
+      p.ell(8 * k, 8.5 * k, 1.4 * k, 1.4 * k, () => e);
+    }
+  };
+}
+
+/** Четвероногие: кабан-таран, волк, снежник. */
+function quad(body: string, belly: string, eye: string, kind: 'boar' | 'wolf' | 'yeti'): Painter {
+  return (p, f) => {
+    const c = rgb(body), b = rgb(belly), e = rgb(eye);
+    const legs = shade(c, 0.7);
+    for (const [x, ph] of [[4, 0], [7, 1], [10, 0], [12, 1]] as const) p.rect(x, 11 + ((ph + f) % 2), 1, 3, legs);
+    if (kind === 'yeti') {
+      p.blob(8, 8, 6, 5.5, c, 0.4);
+      p.blob(8, 4, 3.5, 3, shade(c, 1.05), 0.4);
+      p.rect(6, 5, 4, 2, b);
+      p.set(7, 4, e);
+      p.set(9, 4, e);
+      p.rect(2, 7, 2, 4, shade(c, 0.9));
+      p.rect(12, 7, 2, 4, shade(c, 0.9));
+      return;
+    }
+    p.blob(8, 9, 6, 3.4, c, 0.45);
+    p.ell(8, 10.5, 4, 1.4, () => b);
+    const hx = kind === 'wolf' ? 13 : 12.5;
+    p.blob(hx, 7.5, 2.6, 2.2, shade(c, 1.05), 0.4);
+    p.set(Math.round(hx), 7, e);
+    if (kind === 'boar') {
+      p.set(15, 9, [240, 230, 210]);
+      p.set(14, 10, [240, 230, 210]);
+      for (let x = 4; x < 11; x += 2) p.set(x, 5, shade(c, 0.6));
+    } else {
+      p.set(12, 5, shade(c, 0.8));
+      p.set(13, 5, shade(c, 0.8));
+      p.line(1, 7, 3, 9, shade(c, 0.9));
+    }
+  };
+}
+
+function insect(shell: string, leg: string, spot: string | null): Painter {
+  return (p, f) => {
+    const c = rgb(shell);
+    legs(p, 8, 9, 3, 6, 3, rgb(leg), f);
+    p.blob(8, 9, 4.5, 5, c, 0.4);
+    p.line(8, 5, 8, 13, shade(c, 0.6));
+    if (spot) { p.set(6, 8, rgb(spot)); p.set(10, 11, rgb(spot)); p.set(6, 11 - f, rgb(spot)); }
+    p.ell(8, 4, 2.5, 2, () => shade(c, 0.6));
+    p.set(7, 4, [255, 230, 160]);
+    p.set(9, 4, [255, 230, 160]);
+  };
+}
+
+function winged(wing: string, body: string, eye: string, moth = false): Painter {
+  return (p, f) => {
+    const w = rgb(wing), b = rgb(body), e = rgb(eye);
+    if (moth) {
+      const spread = f ? 0 : 1;
+      p.ell(4 - spread, 7, 3.5, 4 + spread, (nx, ny) => (nx * nx + ny * ny < 0.3 ? shade(w, 1.3) : w));
+      p.ell(12 + spread, 7, 3.5, 4 + spread, (nx, ny) => (nx * nx + ny * ny < 0.3 ? shade(w, 1.3) : w));
+      p.blob(8, 8, 1.6, 4, b, 0.3);
+      p.set(7, 5, e);
+      p.set(9, 5, e);
+      p.line(7, 4, 6, 2, b);
+      p.line(9, 4, 10, 2, b);
+      return;
+    }
+    if (f === 0) for (let k = 0; k < 6; k++) { p.line(7, 8, 1 + k * 0.3, 4 + k, w); p.line(9, 8, 15 - k * 0.3, 4 + k, w); }
+    else for (let k = 0; k < 4; k++) { p.line(7, 8, 3, 9 + k, w); p.line(9, 8, 13, 9 + k, w); }
+    p.blob(8, 8, 2.5, 3, b, 0.3);
+    p.set(7, 7, e);
+    p.set(9, 7, e);
+  };
+}
+
+function shroom(cap: string, stem: string, spot: string, sz = 16, face = true): Painter {
+  return (p, f) => {
+    const c = rgb(cap), st = rgb(stem), sp = rgb(spot), k = sz / 16;
+    p.rect(Math.round(6 * k), Math.round(8 * k), Math.round(4 * k), Math.round(6 * k), st);
+    p.rect(Math.round(5 * k), Math.round(13 * k + f), Math.round(2 * k), Math.max(1, Math.round(k)), shade(st, 0.7));
+    p.rect(Math.round(9 * k), Math.round(13 * k + 1 - f), Math.round(2 * k), Math.max(1, Math.round(k)), shade(st, 0.7));
+    p.ell(8 * k, 7 * k, 6.5 * k, 4 * k, (nx, ny) => (ny > 0.55 ? shade(c, 0.6) : ny < -0.3 ? shade(c, 1.2) : c));
+    for (let i = 0; i < 4 + Math.round(k); i++) {
+      const x = (3 + rnd(i, 1, 13) * 10) * k, y = (4 + rnd(i, 2, 13) * 3) * k;
+      p.ell(x, y, 0.9 * k, 0.7 * k, () => sp);
+    }
+    if (face) {
+      p.set(7 * k, 10 * k, [30, 20, 30]);
+      p.set(9 * k, 10 * k, [30, 20, 30]);
+      if (k >= 2) { p.rect(Math.round(6.5 * k), Math.round(12 * k), Math.round(3 * k), 1, [60, 20, 40]); }
+    }
+  };
+}
+
+function flameWisp(c1: string, c2: string, c3: string, eye: string): Painter {
+  return (p, f) => {
+    p.ell(8, 9, 6 - f * 0.5, 6.5, (nx, ny) => (nx * nx + ny * ny > 0.6 ? rgb(c1) : rgb(c2)));
+    p.ell(8, 9, 3.5, 4, () => rgb(c3));
+    p.set(6 + f, 2, rgb(c1));
+    p.set(10 - f, 1, rgb(c1));
+    eyes(p, 7, 9, 9, rgb(eye), false);
+  };
+}
+
+function droneP(body: string, ring: string, eye: string, sz = 16): Painter {
+  return (p, f) => {
+    const k = sz / 16, b = rgb(body), r = rgb(ring), e = rgb(eye);
+    const tilt = f ? 0.15 : -0.15;
+    p.ell(8 * k, 9 * k, 7 * k, 2.4 * k, (nx, ny) => (Math.abs(nx * nx + ny * ny - 0.8) < 0.22 ? r : null));
+    p.blob(8 * k, 8 * k, 4 * k, 4 * k, b, 0.5);
+    p.ell(8 * k, 8 * k, 1.8 * k, 1.8 * k, () => e);
+    p.set(7.5 * k, 7.5 * k, [255, 255, 255]);
+    p.line(3 * k, (5 + tilt * 6) * k, 1 * k, 3 * k, r);
+    p.line(13 * k, (5 - tilt * 6) * k, 15 * k, 3 * k, r);
+  };
+}
+
+function crystalP(c1: string, c2: string, ball = false): Painter {
+  return (p, f) => {
+    const a = rgb(c1), b = rgb(c2);
+    if (ball) {
+      p.blob(8, 9, 4.5 + f * 0.4, 4.5 + f * 0.4, a, 0.6);
+      for (let k = 0; k < 6; k++) {
+        const ang = (k / 6) * Math.PI * 2 + f * 0.4;
+        p.line(8 + Math.cos(ang) * 4, 9 + Math.sin(ang) * 4, 8 + Math.cos(ang) * 7, 9 + Math.sin(ang) * 7, b);
+      }
+      p.set(7, 8, [255, 255, 255]);
+      return;
+    }
+    p.rect(4, 12, 8, 2, shade(a, 0.6));
+    const shards: [number, number][] = [[5, 7], [8, 10], [11, 6]];
+    for (const [x, h] of shards) for (let k = 0; k < h; k++) {
+      const w = Math.max(0, Math.round(1.6 - (k / h) * 1.2));
+      for (let dx = -w; dx <= w; dx++) p.set(x + dx, 12 - k, dx < 0 ? shade(b, 1.2) : dx > 0 ? shade(a, 0.8) : a);
+    }
+    p.set(8, 4 - f, [255, 255, 255]);
+  };
+}
+
+function goo(c: string): Painter {
+  return (p, f) => {
+    const col = rgb(c);
+    p.blob(8, 10 + f * 0.5, 6 + f, 5 - f, col, 0.5);
+    p.set(5, 8, shade(col, 1.6));
+    p.set(10, 12, [255, 230, 120]);
+    eyes(p, 6, 10, 10);
+  };
+}
+
+function imp(skin: string, horn: string): Painter {
+  return (p, f) => {
+    const s = rgb(skin), h = rgb(horn);
+    p.rect(5, 13, 2, 2, shade(s, 0.6));
+    p.rect(9, 13, 2, 2, shade(s, 0.6));
+    p.blob(8, 10, 3.5, 3.5, shade(s, 0.85), 0.3);
+    p.blob(8, 6, 3.5, 3, s, 0.4);
+    p.line(5, 4, 4, 1, h);
+    p.line(11, 4, 12, 1, h);
+    eyes(p, 7, 9, 6, [255, 240, 120], false);
+    p.line(12, 10 - f, 14, 7 - f, shade(s, 0.7));
+    p.set(14, 6 - f, [255, 220, 90]);
+  };
+}
+
+function shade3(dark: string, eye: string): Painter {
+  return (p, f) => {
+    const d = rgb(dark);
+    p.ell(8, 9, 5.5, 6.5, (nx, ny) => (ny > 0.7 && Math.abs(nx) > 0.3 ? null : shade(d, 1 + (ny < -0.4 ? 0.2 : 0))));
+    for (let k = 0; k < 4; k++) p.set(4 + k * 2.5, 15 - ((k + f) % 2), d);
+    p.rect(6, 6, 1, 2, rgb(eye));
+    p.rect(9, 6, 1, 2, rgb(eye));
+  };
+}
+
+function sparkP(): Painter {
+  return (p, f) => {
+    p.blob(8, 8, 3.5, 3.5, [160, 230, 255], 0.6);
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2 + f;
+      let x = 8, y = 8;
+      for (let st = 0; st < 3; st++) {
+        const nx = x + Math.cos(a + (st % 2 ? 0.6 : -0.6)) * 2, ny = y + Math.sin(a + (st % 2 ? 0.6 : -0.6)) * 2;
+        p.line(x, y, nx, ny, [230, 250, 255]);
+        x = nx; y = ny;
+      }
+    }
+    p.set(7, 7, [255, 255, 255]);
+  };
+}
+
+/** Ангельский вестник: крылья, нимб. */
+function herald(sz: number): Painter {
+  return (p, f) => {
+    const k = sz / 16;
+    const wing: RGB = [255, 248, 220];
+    for (let i = 0; i < 6; i++) {
+      p.line(7 * k, 8 * k, (1 + i * 0.4 - f * 0.5) * k, (3 + i * 1.3) * k, shade(wing, 1 - i * 0.05));
+      p.line(9 * k, 8 * k, (15 - i * 0.4 + f * 0.5) * k, (3 + i * 1.3) * k, shade(wing, 1 - i * 0.05));
+    }
+    p.ell(8 * k, 10 * k, 2.6 * k, 4.5 * k, (nx, ny) => (ny < -0.3 ? [255, 255, 255] : [230, 220, 200]));
+    p.blob(8 * k, 5 * k, 2 * k, 2 * k, [255, 236, 200], 0.4);
+    p.ell(8 * k, 2.2 * k, 2.6 * k, 0.9 * k, (nx, ny) => (nx * nx + ny * ny > 0.45 ? [255, 220, 100] : null));
+    p.set(7.3 * k, 5 * k, [255, 120, 160]);
+    p.set(8.7 * k, 5 * k, [255, 120, 160]);
+  };
+}
+
+const BOSS_PAINT: Record<string, { size: number; paint: Painter }> = {
+  titan: { size: 48, paint: (p, f) => {
+    golemkin('#9a8a8a', '#ffd060', '#ffd060', 48)(p, f);
+    // руны по телу
+    for (const [x, y] of [[18, 24], [28, 20], [22, 32], [30, 30]]) { p.rect(x, y, 3, 1, [255, 214, 110]); p.rect(x + 1, y - 1, 1, 3, [255, 214, 110]); }
+  } },
+  crystalqueen: { size: 48, paint: (p, f) => {
+    const a: RGB = [120, 220, 255], b: RGB = [200, 160, 255];
+    p.ell(24, 30, 9, 14, (nx, ny) => (Math.abs(nx) > 0.7 ? shade(b, 0.8) : nx < 0 ? shade(a, 1.15) : a));
+    for (let k = 0; k < 5; k++) {
+      const x = 12 + k * 6, h = 6 + (k % 2 ? 2 : 5);
+      for (let i = 0; i < h; i++) p.rect(x, 12 - i, Math.max(1, 3 - Math.round(i / 3)), 1, k % 2 ? b : a);
+    }
+    p.blob(24, 15, 6, 5, shade(a, 1.2), 0.5);
+    p.rect(21, 14, 2, 2, [255, 255, 255]);
+    p.rect(26, 14, 2, 2, [255, 255, 255]);
+    for (let k = 0; k < 3; k++) { p.line(13 - k, 24 + k * 4, 6 - f, 20 + k * 6, b); p.line(35 + k, 24 + k * 4, 42 + f, 20 + k * 6, b); }
+  } },
+  mycelord: { size: 48, paint: (p, f) => {
+    shroom('#8a3aa8', '#e8d8c0', '#c8ff8a', 48, true)(p, f);
+    for (let k = 0; k < 5; k++) p.line(8 + k * 8, 46, 6 + k * 9 + f * 2, 40, [120, 90, 60]);
+  } },
+  iceking: { size: 48, paint: (p, f) => {
+    quad('#e8f4ff', '#a8d8f0', '#3a8ad8', 'yeti')(p, f);
+    // уже 16 пикселей: увеличенная копия поверх
+    const tmp = new Pix(16, 16);
+    quad('#e8f4ff', '#a8d8f0', '#3a8ad8', 'yeti')(tmp, f);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if (tmp.alpha(x, y)) p.rect(x * 3, y * 3, 3, 3, tmp.rgb(x, y));
+    for (let k = 0; k < 5; k++) p.rect(12 + k * 5, 4 - (k % 2) * 3, 3, 6 + (k % 2) * 3, [160, 230, 255]);
+    for (let k = 0; k < 4; k++) p.rect(18 + k * 3, 22, 2, 4 + (k % 2) * 3, [200, 245, 255]);
+  } },
+  leviathan: { size: 48, paint: (p, f) => {
+    const c: RGB = [200, 60, 30];
+    for (let k = 0; k < 14; k++) {
+      const a = (k / 14) * Math.PI * 1.7 + 0.6 + f * 0.1;
+      p.blob(24 + Math.cos(a) * 14, 28 + Math.sin(a) * 12, 5 - k * 0.15, 5 - k * 0.15, shade(c, 0.75 + (k % 2) * 0.15), 0.4);
+    }
+    p.blob(24, 18, 9, 8, c, 0.5);
+    p.ell(24, 22, 5, 3 + f, () => [255, 200, 80]);
+    for (let k = 0; k < 6; k++) p.set(20 + k * 1.6, 20 + f, [255, 250, 220]);
+    p.rect(19, 13, 3, 2, [255, 240, 120]);
+    p.rect(27, 13, 3, 2, [255, 240, 120]);
+    for (let k = 0; k < 4; k++) p.line(16 + k * 5, 11, 15 + k * 5, 6, [120, 30, 20]);
+  } },
+  guardian: { size: 48, paint: (p, f) => {
+    droneP('#8a7a4a', '#ffd060', '#6ff0d8', 48)(p, f);
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2 + f * 0.2;
+      p.rect(Math.round(24 + Math.cos(a) * 19), Math.round(26 + Math.sin(a) * 19), 2, 2, [255, 214, 110]);
+    }
+  } },
+};
+
+const EXTRA_PAINT: Record<string, { size: number; paint: Painter }> = {
+  stoneguard: { size: 16, paint: golemkin('#b48c8c', '#5a3a3a', '#ffcf6a') },
+  shardthrower: { size: 16, paint: imp('#a89090', '#6a5a5a') },
+  rockeater: { size: 16, paint: insect('#8a8a88', '#4a4a48', '#c8c8c0') },
+  ram: { size: 16, paint: quad('#8a6a5a', '#b89a8a', '#ff5040', 'boar') },
+  warden: { size: 32, paint: golemkin('#8a7a7a', '#ffcf6a', '#ffcf6a', 32) },
+  crystalspider: { size: 16, paint: (p, f) => { PAINT.spider.paint(p, f); p.blob(8, 10, 3, 3, [120, 220, 255], 0.6); } },
+  prism: { size: 16, paint: crystalP('#c89bff', '#8ff0ff') },
+  glassbat: { size: 16, paint: winged('#8ff0ff', '#4a8aa8', '#ffffff') },
+  shardling: { size: 16, paint: crystalP('#9ff4ff', '#e0ffff', true) },
+  crystalmatron: { size: 32, paint: (p, f) => { PAINT.mother.paint(p, f); p.blob(16, 19, 6, 6, [120, 220, 255], 0.6); p.rect(15, 16, 3, 6, [230, 250, 255]); } },
+  sporeling: { size: 16, paint: shroom('#b04ac8', '#e8d8c0', '#d8ff9a', 16) },
+  mushwalker: { size: 16, paint: shroom('#4aa838', '#d8c8a8', '#f0ffd0', 16) },
+  hopper: { size: 16, paint: (p, f) => {
+    p.blob(8, 10 - f, 5, 4, [90, 170, 80], 0.5);
+    p.blob(5, 6 - f, 1.6, 1.6, [200, 255, 160], 0.3);
+    p.blob(11, 6 - f, 1.6, 1.6, [200, 255, 160], 0.3);
+    p.set(5, 6 - f, [20, 20, 20]);
+    p.set(11, 6 - f, [20, 20, 20]);
+    p.line(3, 13, 1, 14 - f, [70, 130, 60]);
+    p.line(13, 13, 15, 14 - f, [70, 130, 60]);
+  } },
+  moth: { size: 16, paint: winged('#c8b8ff', '#6a5a8a', '#d8ff9a', true) },
+  myconid: { size: 32, paint: shroom('#7a3a98', '#e0d0b8', '#c8ff8a', 32) },
+  icewolf: { size: 16, paint: quad('#c8e0f0', '#ffffff', '#3a8ad8', 'wolf') },
+  frostwisp: { size: 16, paint: flameWisp('#7ac8f0', '#bff4ff', '#ffffff', '#1a4a7a') },
+  yeti: { size: 16, paint: quad('#f0f6ff', '#a8c8e0', '#2a5a9a', 'yeti') },
+  icebat: { size: 16, paint: winged('#8ac8f0', '#5a8ab0', '#ffffff') },
+  frostmother: { size: 32, paint: (p, f) => {
+    flameWisp('#7ac8f0', '#bff4ff', '#ffffff', '#1a4a7a')(p, f);
+    const tmp = new Pix(16, 16);
+    flameWisp('#7ac8f0', '#bff4ff', '#ffffff', '#1a4a7a')(tmp, f);
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if (tmp.alpha(x, y)) p.rect(x * 2, y * 2, 2, 2, tmp.rgb(x, y));
+    for (let k = 0; k < 5; k++) p.rect(8 + k * 4, 1 + (k % 2) * 2, 2, 4, [200, 245, 255]);
+  } },
+  magmaslime: { size: 16, paint: goo('#e0502a') },
+  fireimp: { size: 16, paint: imp('#e05a3a', '#3a1a10') },
+  lavabeetle: { size: 16, paint: insect('#4a2a20', '#2a1410', '#ff8a2a') },
+  ashbat: { size: 16, paint: winged('#6a5a58', '#3a2a28', '#ff6a3a') },
+  magmagolem: { size: 32, paint: golemkin('#4a2a22', '#ff7a2a', '#ffd06a', 32) },
+  sentinel: { size: 16, paint: golemkin('#c8a860', '#6ff0d8', '#6ff0d8') },
+  hunterdrone: { size: 16, paint: droneP('#5a6a6a', '#6ff0d8', '#ffd060') },
+  construct: { size: 16, paint: golemkin('#a8783a', '#ffd060', '#6ff0d8') },
+  spark: { size: 16, paint: sparkP() },
+  archon: { size: 32, paint: droneP('#c8a860', '#ffd060', '#6ff0d8', 32) },
+  voidspawn: { size: 16, paint: shade3('#2a1840', '#ff5ab0') },
+  starwisp: { size: 16, paint: flameWisp('#8a6ad8', '#c8a8ff', '#ffffff', '#2a1a5a') },
+  gravit: { size: 16, paint: golemkin('#4a3a6a', '#c8a8ff', '#ffffff') },
+  corebat: { size: 16, paint: winged('#6a4ab0', '#3a2a6a', '#e0d0ff') },
+  herald: { size: 32, paint: herald(32) },
+  ...BOSS_PAINT,
+};
+Object.assign(PAINT, EXTRA_PAINT);
+
 function wormSegment(): Pix {
   const p = new Pix();
   const c: RGB = [190, 126, 96];
@@ -876,13 +1328,16 @@ export interface Atlas {
   cracks: Sprite[];
   floor: Map<string, Sprite[]>;
   dug: Map<string, Sprite[]>;
-  deco: Map<number, Sprite>;
+  decoSets: Map<string, Sprite[]>;
   props: Map<string, Sprite>;
   enemies: Map<string, EnemySprites>;
   segment: Sprite;
   picks: Sprite[];
   swords: Sprite[];
   heroes: Map<string, HeroSprites>;
+  npcs: Map<string, HeroSprites>;
+  bogo: HTMLImageElement;
+  bogoTrue: HTMLImageElement;
 }
 
 function cracks(stage: number): Pix {
@@ -902,8 +1357,9 @@ export function buildAtlas(): Atlas {
   const a: Atlas = {
     rockTop: new Map(), rockFace: new Map(), ore: new Map(), oreFace: new Map(), chest: [], crate: crate().canvas(), tnt: tnt().canvas(),
     crystal: crystal().canvas(), door: door().canvas(), cracks: [0, 1, 2, 3].map((k) => cracks(k).canvas()), floor: new Map(),
-    dug: new Map(), deco: new Map(), props: new Map(), enemies: new Map(), segment: wormSegment().canvas(),
-    picks: [0, 1, 2, 3, 4].map((k) => pickSprite(k).canvas()), swords: [0, 1, 2, 3, 4].map((k) => swordSprite(k).canvas()), heroes: new Map(),
+    dug: new Map(), decoSets: new Map(), props: new Map(), enemies: new Map(), segment: wormSegment().canvas(),
+    picks: [0, 1, 2, 3, 4, 5, 6].map((k) => pickSprite(k).canvas()), swords: [0, 1, 2, 3, 4, 5, 6].map((k) => swordSprite(k).canvas()), heroes: new Map(),
+    npcs: new Map(NPCS.map((n) => [n.id, buildHero(n.look)])), bogo: loadImage(BOGO_SHEET), bogoTrue: loadImage(BOGO_TRUE_SHEET),
   };
   for (const [b, st] of Object.entries(ROCK_STYLE)) {
     const base = hex(st.base);
@@ -917,15 +1373,21 @@ export function buildAtlas(): Atlas {
   return a;
 }
 
-/** Плитки пола пласта (кэшируются по цвету). */
-export function floorTiles(a: Atlas, color: string): { floor: Sprite[]; dug: Sprite[] } {
+function loadImage(src: string): HTMLImageElement {
+  const im = new Image();
+  im.src = src;
+  return im;
+}
+
+/** Плитки пола и украшения пласта (кэшируются по цвету). */
+export function floorTiles(a: Atlas, color: string): { floor: Sprite[]; dug: Sprite[]; deco: Sprite[] } {
   if (!a.floor.has(color)) {
     const base = hex(color);
     a.floor.set(color, [0, 1, 2, 3].map((k) => floorTile(base, k * 17 + 3, false).canvas()));
     a.dug.set(color, [0, 1].map((k) => floorTile(base, k * 17 + 5, true).canvas()));
-    for (const d of [1, 2, 3, 4, 5]) a.deco.set(d, deco(d, base).canvas());
+    a.decoSets.set(color, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((d) => deco(d, base).canvas()));
   }
-  return { floor: a.floor.get(color)!, dug: a.dug.get(color)! };
+  return { floor: a.floor.get(color)!, dug: a.dug.get(color)!, deco: a.decoSets.get(color)! };
 }
 
 export function heroSprites(a: Atlas, hero: HeroDef): HeroSprites {
