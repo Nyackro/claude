@@ -486,7 +486,7 @@ function worm(f: Floor, e: Enemy, dt: number): void {
         if (e.trail.length > 7) e.trail.pop();
       }
       touch(f, e, e.x, e.y, e.r, dmgOf(f, e));
-      for (const s of e.trail.slice(1)) touch(f, e, s.x, s.y, 0.36, dmgOf(f, e, e.def.dmg * 0.7));
+      for (const s of e.trail.slice(1)) touch(f, e, s.x, s.y, 0.36, dmgOf(f, e, e.def.dmg * 0.5));
       if (e.enraged && e.cd <= 0) {
         e.cd = 1.6;
         spread(f, e, 'rock', dmgOf(f, e, 4), 6, 3, 0.3);
@@ -530,7 +530,7 @@ function emerge(f: Floor, e: Enemy): void {
   f.audio.boom();
   f.fx.burst(e.x, e.y, '#9a7050', 26, 6, 2.8, 0, 0.7);
   f.fx.ring(e.x, e.y, 1.5, '#d9a070');
-  if (Math.hypot(p.x - e.x, p.y - e.y) < 1.5 + p.r) f.hurt(Math.round(dmgOf(f, e) * 1.3), e, 'Червь!');
+  if (Math.hypot(p.x - e.x, p.y - e.y) < 1.5 + p.r) f.hurt(Math.round(dmgOf(f, e) * 1.2), e, 'Червь!');
   radial(f, e, 'rock', dmgOf(f, e, 3), 5.5, e.enraged ? 8 : 4);
 }
 

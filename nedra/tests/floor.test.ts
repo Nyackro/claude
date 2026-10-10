@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { newRun } from '../src/core/run';
+import { BUILDINGS, buildingCost, buildingLevel } from '../src/data/meta';
 import { freshMeta, playFloor, simulateRun } from './bot';
 
 describe('этаж под управлением бота', () => {
@@ -25,4 +26,30 @@ describe('этаж под управлением бота', () => {
       }
     }
   }, 600_000);
+});
+
+describe('прогрессия между забегами', () => {
+  it.skipIf(!process.env.SIM_META)('кампания (SIM_META=1)', () => {
+    const meta = freshMeta();
+    meta.tutorialDone = false;
+    const out = process.env.SIM_OUT ?? 'sim.log';
+    let time = 0;
+    for (let r = 1; r <= Number(process.env.SIM_RUNS ?? 30); r++) {
+      const hero = meta.heroes.includes('warrior') ? 'warrior' : 'miner';
+      const sim = simulateRun(meta, hero, r * 104729, 3);
+      const t = sim.floors.reduce((a, f) => a + f.time, 0) + sim.floors.length * 40;
+      time += t;
+      // постройки: самые дешёвые полезные
+      for (let k = 0; k < 20; k++) {
+        const opts = BUILDINGS.filter((b) => buildingLevel(meta, b.id) < b.max).map((b) => ({ b, c: buildingCost(b, buildingLevel(meta, b.id)) }))
+          .sort((a, b) => a.c - b.c);
+        const o = opts[0];
+        if (!o || meta.ingots < o.c) break;
+        meta.ingots -= o.c;
+        meta.buildings[o.b.id] = buildingLevel(meta, o.b.id) + 1;
+      }
+      const last = sim.floors[sim.floors.length - 1];
+      appendFileSync(out, `run ${r} ${hero}: ${sim.floors.map((f) => `${f.layer}.${f.floor}${f.done ? '' : f.died ? 'x' : 't'}`).join(' ')} | ${last ? `${last.time}s` : ''} ingots +${sim.outcome.ingots} bank ${meta.ingots} bosses [${meta.bosses}] heroes ${meta.heroes.length} bld ${JSON.stringify(meta.buildings)} time ${Math.round(time / 60)}m\n`);
+    }
+  }, 900_000);
 });

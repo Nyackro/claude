@@ -157,6 +157,7 @@ export class Floor implements FloorApi {
   kills = 0;
   oreMined = 0;
   blocksBroken = 0;
+  lastHit = { i: -1, t: -9 };
   torchesPlaced = 0;
   private flowT = 0;
   private waveT: number;
@@ -379,6 +380,7 @@ export class Floor implements FloorApi {
     if (len > 1) { mx /= len; my /= len; }
     p.moving = len > 0.15;
     if (p.moving) {
+      if (Math.floor(p.walk / 2.5) !== Math.floor((p.walk + dt * 8) / 2.5)) this.fx.dust(p.x - 0.5, p.y + 0.15, 1, 'rgba(150,130,110,0.5)');
       p.face = Math.atan2(my, mx);
       p.dir = Math.abs(mx) > Math.abs(my) ? (mx > 0 ? 'right' : 'left') : (my > 0 ? 'down' : 'up');
       p.walk += dt * 8;
@@ -466,6 +468,7 @@ export class Floor implements FloorApi {
       return false;
     }
     g.hp[i] -= power;
+    this.lastHit = { i, t: this.time };
     if (primary) this.env.audio.dig(Math.min(3, g.maxHp(i) / 8));
     this.fx.burst(x + 0.5, y + 0.5, this.blockColor(i), primary ? 4 : 2, 3, 1.6, 0, 0.35);
     if (g.hp[i] <= 0) {
@@ -1095,7 +1098,7 @@ export class Floor implements FloorApi {
         } else if (Math.hypot(p.x - pr.x, p.y - pr.y) < p.r + pr.r) {
           pr.life = 0;
           this.hurt(pr.dmg, null, pr.kind === 'web' ? 'Паутина!' : '');
-          if (pr.kind === 'web') p.slowT = 2;
+          if (pr.kind === 'web') p.slowT = 1.4;
         }
       }
     }
@@ -1369,8 +1372,11 @@ export class Floor implements FloorApi {
       return;
     }
     for (const i of t.sealed) if (g.b[i] === B.DOOR) g.b[i] = B.FLOOR;
-    g.set(t.room.cx, t.room.cy, B.CHEST);
-    g.ore[g.i(t.room.cx, t.room.cy)] = 2;
+    // сундук в центре комнаты, но не под гномом
+    let cx = t.room.cx, cy = t.room.cy;
+    if (Math.floor(p.x) === cx && Math.floor(p.y) === cy) cx += cx > t.room.x0 ? -1 : 1;
+    g.set(cx, cy, B.CHEST);
+    g.ore[g.i(cx, cy)] = 2;
     this.env.toast('Испытание пройдено! Сундук ждёт', 'good');
     this.env.audio.fanfare();
     this.trial = null;

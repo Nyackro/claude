@@ -202,10 +202,19 @@ export class Renderer {
     else {
       const host = b === B.ORE ? g.host[i] : b;
       const tops = a.rockTop.get(host) ?? a.rockTop.get(B.STONE)!;
-      ctx.drawImage(tops[Math.floor(h * tops.length)], px, py);
+      const jig = f.lastHit.i === i && f.time - f.lastHit.t < 0.1 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+      ctx.drawImage(tops[Math.floor(h * tops.length)], px + jig, py);
       if (b === B.ORE) {
         const ov = a.ore.get(g.ore[i])!;
-        ctx.drawImage(ov[Math.floor(h * 7) % ov.length], px, py);
+        ctx.drawImage(ov[Math.floor(h * 7) % ov.length], px + jig, py);
+        // блеск руды
+        const ph = (this.time * 0.7 + h * 10) % 3;
+        if (ph < 0.25 && f.vis[i]) {
+          const sx = px + 3 + Math.floor(h * 97) % 10, sy = py + 3 + Math.floor(h * 53) % 10;
+          ctx.fillStyle = `rgba(255,255,255,${0.9 - ph * 3})`;
+          ctx.fillRect(sx, sy - 1, 1, 3);
+          ctx.fillRect(sx - 1, sy, 3, 1);
+        }
       }
       // контур там, где порода граничит с пустотой, и шов между разными породами
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -432,7 +441,8 @@ export class Renderer {
     let scale = (e.def.size * T) / spr.size * (e.elite ? 1.15 : 1);
     if (e.spawnT > 0) scale *= Math.max(0.1, 1 - e.spawnT / 0.6);
     const flip = e.vx < -0.05;
-    const baseY = e.y + e.r * 0.9;
+    const bob = e.def.ai === 'bat' || e.def.ai === 'ranged' && e.def.id === 'wisp' ? Math.sin(e.t * 6) * 0.08 - 0.15 : 0;
+    const baseY = e.y + e.r * 0.9 + bob;
     if (e.def.ai === 'worm') {
       for (let k = e.trail.length - 1; k >= 1; k--) {
         const s = e.trail[k];
@@ -666,7 +676,8 @@ export class Renderer {
 
   private lights(f: Floor): Light[] {
     const g = f.g;
-    const ls: Light[] = [{ x: f.p.x, y: f.p.y, r: f.stats.light + 0.4 + Math.sin(this.time * 7) * 0.05 }];
+    const ls: Light[] = [{ x: f.p.x, y: f.p.y, r: f.stats.light + 0.2 + Math.sin(this.time * 7) * 0.05 },
+      { x: f.p.x + Math.cos(f.p.face) * 1.3, y: f.p.y + Math.sin(f.p.face) * 1.3, r: f.stats.light * 0.75 }];
     for (const t of f.torchList) ls.push({ x: t.x, y: t.y, r: t.r + Math.sin(this.time * 9 + t.x) * 0.12 });
     for (const p of f.props) if (p.kind === 'lamp' && g.seen[g.i(p.x, p.y)]) ls.push({ x: p.x + 0.5, y: p.y + 0.5, r: 3.4 });
     for (const fz of f.fires) ls.push({ x: fz.x, y: fz.y, r: 1.4 });
