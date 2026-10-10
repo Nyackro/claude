@@ -42,6 +42,28 @@ function glow(rgb: string): HTMLCanvasElement {
   return c;
 }
 
+const PROJ_CACHE = new Map<string, HTMLCanvasElement>();
+
+/** Спрайт снаряда 16x16 в пикселях мира (рисуется один раз на вид, цвет и кадр). */
+function projSprite(key: string, draw: (g: CanvasRenderingContext2D) => void): HTMLCanvasElement {
+  let c = PROJ_CACHE.get(key);
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = c.height = 16;
+    const g = c.getContext('2d')!;
+    g.translate(8, 8);
+    draw(g);
+    PROJ_CACHE.set(key, c);
+  }
+  return c;
+}
+
+/** Пиксельный круг радиуса r с центром между пикселями. */
+function pixDisc(g: CanvasRenderingContext2D, r: number, color: string): void {
+  g.fillStyle = color;
+  for (let y = -r; y < r; y++) for (let x = -r; x < r; x++) if ((x + 0.5) ** 2 + (y + 0.5) ** 2 <= r * r + 0.5) g.fillRect(x, y, 1, 1);
+}
+
 interface Light { x: number; y: number; r: number }
 
 export class Renderer {
@@ -964,6 +986,8 @@ export class Renderer {
 
   private drawProjs(f: Floor): void {
     const ctx = this.ctx;
+    const crowd = f.projs.length;
+    const blink = Math.floor(this.time * 8) % 2;
     for (const pr of f.projs) {
       const px = pr.x * T, py = pr.y * T;
       if (!pr.mine && pr.wait > 0) {
@@ -973,7 +997,7 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(px, py, 4 + Math.sin(this.time * 10) * 0.8, 0, Math.PI * 2);
         ctx.stroke();
-      } else if (!pr.mine && pr.kind !== 'ebomb' && pr.kind !== 'web') {
+      } else if (!pr.mine && pr.kind !== 'ebomb' && pr.kind !== 'web' && crowd < 90) {
         // короткий след
         ctx.strokeStyle = `rgba(${hexToRgb(pr.color ?? PROJ_COLOR[pr.kind] ?? '#ffffff')},0.35)`;
         ctx.lineWidth = 2;
@@ -983,14 +1007,15 @@ export class Renderer {
         ctx.stroke();
       }
       switch (pr.kind) {
-        case 'orb':
-          ctx.fillStyle = pr.color ?? '#9ff4ff';
-          ctx.beginPath();
-          ctx.arc(px, py, pr.r * T * 0.75, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(px - 1, py - 1, 2, 2);
+        case 'orb': {
+          const c = pr.color ?? '#9ff4ff', r = pr.r > 0.2 ? 3 : 2;
+          ctx.drawImage(projSprite(`orb${c}${r}`, (g) => {
+            pixDisc(g, r, c);
+            g.fillStyle = '#ffffff';
+            g.fillRect(-1, -1, 2, 2);
+          }), px - 8, py - 8);
           break;
+        }
         case 'ice': {
           ctx.save();
           ctx.translate(px, py);
@@ -1009,37 +1034,43 @@ export class Renderer {
           break;
         }
         case 'spore': {
-          const wob = Math.sin(this.time * 9 + pr.x * 5) * 0.6;
-          ctx.fillStyle = pr.color ?? '#9dff7a';
-          ctx.beginPath();
-          ctx.arc(px, py, 2.6 + wob * 0.3, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = 'rgba(40,90,20,0.8)';
-          ctx.fillRect(px - 1 + wob, py, 1, 1);
-          ctx.fillRect(px + 1, py - 1 - wob, 1, 1);
+          const c = pr.color ?? '#9dff7a', fr = (blink + (pr.x * 3 | 0)) & 1;
+          ctx.drawImage(projSprite(`spore${c}${fr}`, (g) => {
+            pixDisc(g, 3, c);
+            g.fillStyle = 'rgba(40,90,20,0.85)';
+            g.fillRect(fr ? -2 : -1, 0, 1, 1);
+            g.fillRect(1, fr ? -2 : -1, 1, 1);
+          }), px - 8, py - 8);
           break;
         }
         case 'holy': {
-          ctx.save();
-          ctx.translate(px, py);
-          ctx.rotate(this.time * 6 + pr.x);
-          ctx.fillStyle = pr.color ?? '#fff2b0';
-          ctx.fillRect(-4, -1, 8, 2);
-          ctx.fillRect(-1, -4, 2, 8);
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(-1.5, -1.5, 3, 3);
-          ctx.restore();
+          // мерцающая звезда света: «плюс» и «крест» по очереди
+          const c = pr.color ?? '#fff2b0', fr = (blink + (pr.x * 5 | 0)) & 1;
+          ctx.drawImage(projSprite(`holy${c}${fr}`, (g) => {
+            g.fillStyle = c;
+            if (fr) {
+              g.fillRect(-4, -1, 8, 2);
+              g.fillRect(-1, -4, 2, 8);
+            } else for (let k = -3; k <= 2; k++) {
+              g.fillRect(k, k, 1, 1);
+              g.fillRect(k, -k - 1, 1, 1);
+            }
+            g.fillStyle = '#ffffff';
+            g.fillRect(-1, -1, 2, 2);
+          }), px - 8, py - 8);
           break;
         }
         case 'glitch': {
           const ph = Math.floor(this.time * 20 + pr.x * 7) % 3;
-          const j = ph === 2 ? 1 : 0;
-          ctx.fillStyle = 'rgba(42,240,255,0.8)';
-          ctx.fillRect(px - 3 + j + 1, py - 3, 6, 6);
-          ctx.fillStyle = 'rgba(255,42,140,0.85)';
-          ctx.fillRect(px - 3 - j - 1, py - 3, 6, 6);
-          ctx.fillStyle = ph === 0 ? '#ffffff' : '#120612';
-          ctx.fillRect(px - 2, py - 2, 4, 4);
+          ctx.drawImage(projSprite(`glitch${ph}`, (g) => {
+            const j = ph === 2 ? 1 : 0;
+            g.fillStyle = 'rgba(42,240,255,0.85)';
+            g.fillRect(-2 + j, -3, 6, 6);
+            g.fillStyle = 'rgba(255,42,140,0.9)';
+            g.fillRect(-4 - j, -3, 6, 6);
+            g.fillStyle = ph === 0 ? '#ffffff' : '#120612';
+            g.fillRect(-2, -2, 4, 4);
+          }), px - 8, py - 8);
           break;
         }
         case 'shard':
@@ -1169,7 +1200,11 @@ export class Renderer {
       const l = lum(e);
       if (l && !e.under && e.ghost > 0.3) ls.push({ x: e.x, y: e.y, r: l[0] });
     }
-    for (const pr of f.projs) if (pr.kind === 'fire' || pr.kind === 'efire' || pr.kind === 'holy' || pr.kind === 'orb') ls.push({ x: pr.x, y: pr.y, r: 1.2 });
+    let pl = 0;
+    for (const pr of f.projs) {
+      if (pl >= 24) break;
+      if (pr.kind === 'fire' || pr.kind === 'efire' || pr.kind === 'holy' || pr.kind === 'orb') { ls.push({ x: pr.x, y: pr.y, r: 1.2 }); pl++; }
+    }
     for (const b of f.beams) {
       if (b.warn > 0) continue;
       for (let d = 1; d < b.len; d += 3) ls.push({ x: b.x + Math.cos(b.a) * d, y: b.y + Math.sin(b.a) * d, r: 1.6 });
@@ -1278,11 +1313,13 @@ export class Renderer {
       ctx.fillRect(pl.x * T - w / 8, (pl.y - 14) * T, w / 4, 14 * T);
       put(pl.x, pl.y, 1.6, pl.color, 0.6 * k);
     }
-    for (const pr of f.projs) {
+    const many = f.projs.length > 80;
+    f.projs.forEach((pr, k) => {
+      if (many && k & 1) return;
       if (pr.kind === 'fire' || pr.kind === 'efire') put(pr.x, pr.y, 0.7, pr.color ? hexToRgb(pr.color) : '255,140,50', 0.7);
       else if (pr.kind === 'bolt' || pr.kind === 'bullet') put(pr.x, pr.y, 0.5, '140,220,255', 0.6);
-      else if (!pr.mine && PROJ_COLOR[pr.kind] && pr.kind !== 'rock') put(pr.x, pr.y, 0.65, hexToRgb(pr.color ?? PROJ_COLOR[pr.kind]), 0.6);
-    }
+      else if (!pr.mine && PROJ_COLOR[pr.kind] && pr.kind !== 'rock') put(pr.x, pr.y, many ? 0.8 : 0.65, hexToRgb(pr.color ?? PROJ_COLOR[pr.kind]), 0.6);
+    });
     for (const e of f.enemies) {
       const l = lum(e);
       if (l && !e.under && (f.vis[g.i(Math.floor(e.x), Math.floor(e.y))] || e.boss)) put(e.x, e.y - 0.2, l[0] * 0.45, l[1], 0.45 * e.ghost);

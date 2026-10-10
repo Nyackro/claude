@@ -269,7 +269,7 @@ export function renderStation(game: Game): void {
     : `${L.name}. Дальше: ${nextFloor >= 2 ? `Разлом: ${L.bosses.map((b) => enemyDef(b).name).join(' и ')}` : `этаж ${nextFloor + 1} из 2`}.`));
 
   if (st.reward && st.reward.length) {
-    parts.push(h('div', { class: 'panel' }, h('h3', null, st.kind === 'boss' ? 'Награда Разлома: выбери предмет' : 'Набор экспедиции: выбери предмет'),
+    parts.push(h('div', { class: 'panel' }, h('h3', null, `${st.kind === 'boss' ? 'Награда Разлома' : 'Набор экспедиции'}: ${st.rewardLeft > 1 ? `выбери ${st.rewardLeft} из ${st.reward?.length ?? 0}` : 'выбери предмет'}`),
       h('div', { class: 'grid' }, ...st.reward.map((id) => itemCard(id, [], () => {
         chooseReward(meta, run, id);
         game.audio.pickup();

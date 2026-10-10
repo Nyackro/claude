@@ -26,6 +26,7 @@ export interface MetaState {
   rescued: string[];                    // спасённые мастера по порядку
   npcUp: Record<string, number>;        // уровни их улучшений
   seenTrue: boolean;                    // видел явление Истинного Богомирона
+  seenBogo: boolean;                    // видел явление Богомирона (повторно заставка короче)
 }
 
 export interface StationState {
@@ -83,6 +84,7 @@ export function newMeta(): MetaState {
     rescued: [],
     npcUp: {},
     seenTrue: false,
+    seenBogo: false,
   };
 }
 

@@ -1736,11 +1736,13 @@ export class Floor implements FloorApi {
     });
     this.shake = 0.6;
     if (god) {
-      const truth = ids[0] === 'bogomiron_true';
-      this.cine = { t: 0, dur: truth ? 6.5 : 3.8, kind: truth ? 'true' : 'bogo' };
+      const truth = ids[0] === 'bogomiron_true', m = this.env.meta;
+      const seen = truth ? m.seenTrue : m.seenBogo;
+      this.cine = { t: 0, dur: truth ? (seen ? 3.6 : 6.5) : seen ? 2.4 : 3.8, kind: truth ? 'true' : 'bogo' };
       for (const b of this.bosses) b.spawnT = this.cine.dur;
-      this.env.audio.godAppear(truth);
-      if (truth) this.env.meta.seenTrue = true;
+      this.env.audio.godAppear(truth, this.cine.dur);
+      if (truth) m.seenTrue = true;
+      else m.seenBogo = true;
     } else {
       this.env.audio.rumble();
       this.env.audio.roar();

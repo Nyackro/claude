@@ -224,9 +224,8 @@ export class Audio {
   }
 
   /** Явление бога: гул, хор ангелов, у Истинного - крик и удар колокола. */
-  godAppear(truth: boolean): void {
+  godAppear(truth: boolean, dur = truth ? 6.5 : 3.8): void {
     if (!this.ok()) return;
-    const dur = truth ? 6.5 : 3.8;
     const c = this.ctx!, t = c.currentTime;
     // гул снизу
     for (const f of [55, 110]) {
@@ -247,14 +246,15 @@ export class Audio {
       for (let k = 0; k < 3; k++) {
         const o = c.createOscillator();
         o.type = 'sawtooth';
-        o.frequency.setValueAtTime(700 + k * 140, t + 1.5);
+        const s0 = Math.min(1.5, dur * 0.3);
+        o.frequency.setValueAtTime(700 + k * 140, t + s0);
         o.frequency.exponentialRampToValueAtTime(1600 + k * 300, t + dur);
         const f = c.createBiquadFilter();
         f.type = 'bandpass';
         f.frequency.value = 2400;
         f.Q.value = 3;
         const g = c.createGain();
-        g.gain.setValueAtTime(0.0001, t + 1.5);
+        g.gain.setValueAtTime(0.0001, t + s0);
         g.gain.exponentialRampToValueAtTime(0.06, t + dur - 0.3);
         g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.6);
         const lfo = c.createOscillator();
@@ -263,9 +263,9 @@ export class Audio {
         lg.gain.value = 18;
         lfo.connect(lg).connect(o.frequency);
         o.connect(f).connect(g).connect(this.sfxGain!);
-        o.start(t + 1.5);
+        o.start(t + s0);
         o.stop(t + dur + 0.7);
-        lfo.start(t + 1.5);
+        lfo.start(t + s0);
         lfo.stop(t + dur + 0.7);
       }
     }
